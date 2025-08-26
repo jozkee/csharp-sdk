@@ -10,6 +10,29 @@ namespace ModelContextProtocol.Protocol;
 public sealed class ToolsCapability
 {
     /// <summary>
+    /// Initializes a new instance of the <see cref="ToolsCapability"/> class.
+    /// </summary>
+    public ToolsCapability()
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ToolsCapability"/> class with server-specific handlers and configuration.
+    /// </summary>
+    /// <param name="listToolsHandler">The handler for list tools requests.</param>
+    /// <param name="callToolHandler">The handler for call tool requests.</param>
+    /// <param name="toolCollection">A collection of tools served by the server.</param>
+    public ToolsCapability(
+        Func<RequestContext<ListToolsRequestParams>, CancellationToken, ValueTask<ListToolsResult>>? listToolsHandler = null,
+        Func<RequestContext<CallToolRequestParams>, CancellationToken, ValueTask<CallToolResult>>? callToolHandler = null,
+        McpServerPrimitiveCollection<McpServerTool>? toolCollection = null)
+    {
+        ListToolsHandler = listToolsHandler;
+        CallToolHandler = callToolHandler;
+        ToolCollection = toolCollection;
+    }
+
+    /// <summary>
     /// Gets or sets whether this server supports notifications for changes to the tool list.
     /// </summary>
     /// <remarks>
@@ -32,8 +55,8 @@ public sealed class ToolsCapability
     /// When used in conjunction with <see cref="ToolCollection"/>, both the tools from this handler
     /// and the tools from the collection will be combined to form the complete list of available tools.
     /// </remarks>
-    [JsonIgnore]
-    public Func<RequestContext<ListToolsRequestParams>, CancellationToken, ValueTask<ListToolsResult>>? ListToolsHandler { get; set; }
+    //[JsonIgnore]
+    internal Func<RequestContext<ListToolsRequestParams>, CancellationToken, ValueTask<ListToolsResult>>? ListToolsHandler { get; set; }
 
     /// <summary>
     /// Gets or sets the handler for <see cref="RequestMethods.ToolsCall"/> requests.
@@ -44,8 +67,8 @@ public sealed class ToolsCapability
     /// It receives a <see cref="RequestContext{CallToolRequestParams}"/> containing information about the tool 
     /// being called and its arguments, and should return a <see cref="CallToolResult"/> with the execution results.
     /// </remarks>
-    [JsonIgnore]
-    public Func<RequestContext<CallToolRequestParams>, CancellationToken, ValueTask<CallToolResult>>? CallToolHandler { get; set; }
+    //[JsonIgnore]
+    internal Func<RequestContext<CallToolRequestParams>, CancellationToken, ValueTask<CallToolResult>>? CallToolHandler { get; set; }
 
     /// <summary>
     /// Gets or sets a collection of tools served by the server.
@@ -58,6 +81,6 @@ public sealed class ToolsCapability
     /// being requested, and if the tool is not found in the <see cref="ToolCollection"/>, any specified <see cref="CallToolHandler"/>
     /// will be invoked as a fallback.
     /// </remarks>
-    [JsonIgnore]
-    public McpServerPrimitiveCollection<McpServerTool>? ToolCollection { get; set; }
+    //[JsonIgnore]
+    internal McpServerPrimitiveCollection<McpServerTool>? ToolCollection { get; set; }
 }
