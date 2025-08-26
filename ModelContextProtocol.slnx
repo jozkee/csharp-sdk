@@ -41,4 +41,5 @@
     <Project Path="tests/ModelContextProtocol.TestServer/ModelContextProtocol.TestServer.csproj" />
     <Project Path="tests/ModelContextProtocol.TestSseServer/ModelContextProtocol.TestSseServer.csproj" />
   </Folder>
+  <Project Path="C:/Users/dacantu/apps/mcpcore/mcpcore.csproj" />
 </Solution>

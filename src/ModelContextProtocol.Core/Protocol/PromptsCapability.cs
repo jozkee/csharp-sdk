@@ -19,6 +19,16 @@ namespace ModelContextProtocol.Protocol;
 public sealed class PromptsCapability
 {
     /// <summary>
+    /// Gets or sets the wire protocol capability information that will be serialized and sent to clients.
+    /// </summary>
+    /// <remarks>
+    /// This contains only the properties that are relevant to clients and are part of the wire protocol,
+    /// such as whether the server supports list change notifications.
+    /// </remarks>
+    [JsonIgnore]
+    public PromptsWireCapability Wire { get; set; } = new();
+
+    /// <summary>
     /// Gets or sets whether this server supports notifications for changes to the prompt list.
     /// </summary>
     /// <remarks>
@@ -29,7 +39,11 @@ public sealed class PromptsCapability
     /// to available prompts.
     /// </remarks>
     [JsonPropertyName("listChanged")]
-    public bool? ListChanged { get; set; }
+    public bool? ListChanged 
+    { 
+        get => Wire.ListChanged; 
+        set => Wire.ListChanged = value; 
+    }
 
     /// <summary>
     /// Gets or sets the handler for <see cref="RequestMethods.PromptsList"/> requests.

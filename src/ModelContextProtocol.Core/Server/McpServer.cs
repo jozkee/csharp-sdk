@@ -76,9 +76,9 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
         // Now that everything has been configured, subscribe to any necessary notifications.
         if (transport is not StreamableHttpServerTransport streamableHttpTransport || streamableHttpTransport.Stateless is false)
         {
-            Register(ServerOptions.Capabilities?.Tools?.ToolCollection, NotificationMethods.ToolListChangedNotification);
-            Register(ServerOptions.Capabilities?.Prompts?.PromptCollection, NotificationMethods.PromptListChangedNotification);
-            Register(ServerOptions.Capabilities?.Resources?.ResourceCollection, NotificationMethods.ResourceListChangedNotification);
+            Register(ServerCapabilities.ToolsCapability?.ToolCollection, NotificationMethods.ToolListChangedNotification);
+            Register(ServerCapabilities.PromptsCapability?.PromptCollection, NotificationMethods.PromptListChangedNotification);
+            Register(ServerCapabilities.ResourcesCapability?.ResourceCollection, NotificationMethods.ResourceListChangedNotification);
 
             void Register<TPrimitive>(McpServerPrimitiveCollection<TPrimitive>? collection, string notificationMethod)
                 where TPrimitive : IMcpServerPrimitive
@@ -190,19 +190,22 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureCompletion(McpServerOptions options)
     {
-        if (options.Capabilities?.Completions is not { } completionsCapability)
+        // Check both new and old property names for backward compatibility
+#pragma warning disable CS0618 // Type or member is obsolete
+        var completionsCapability = options.Capabilities?.CompletionsCapability ?? options.Capabilities?.Completions;
+#pragma warning restore CS0618 // Type or member is obsolete
+        if (completionsCapability is null)
         {
             return;
         }
 
-        ServerCapabilities.Completions = new()
-        {
-            CompleteHandler = completionsCapability.CompleteHandler ?? (static async (_, __) => new CompleteResult())
-        };
+        ServerCapabilities.CompletionsCapability = completionsCapability;
+
+        var completeHandler = completionsCapability.CompleteHandler ?? (static async (_, __) => new CompleteResult());
 
         SetHandler(
             RequestMethods.CompletionComplete,
-            ServerCapabilities.Completions.CompleteHandler,
+            completeHandler,
             McpJsonUtilities.JsonContext.Default.CompleteRequestParams,
             McpJsonUtilities.JsonContext.Default.CompleteResult);
     }
@@ -214,12 +217,14 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureResources(McpServerOptions options)
     {
-        if (options.Capabilities?.Resources is not { } resourcesCapability)
+        // Check both new and old property names for backward compatibility
+        var resourcesCapability = options.Capabilities?.ResourcesCapability ?? options.Capabilities?.Resources;
+        if (resourcesCapability is null)
         {
             return;
         }
 
-        ServerCapabilities.Resources = new();
+        ServerCapabilities.ResourcesCapability = resourcesCapability;
 
         var listResourcesHandler = resourcesCapability.ListResourcesHandler ?? (static async (_, __) => new ListResourcesResult());
         var listResourceTemplatesHandler = resourcesCapability.ListResourceTemplatesHandler ?? (static async (_, __) => new ListResourceTemplatesResult());
@@ -312,14 +317,9 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
             // subscribe = true;
         }
 
-        ServerCapabilities.Resources.ListResourcesHandler = listResourcesHandler;
-        ServerCapabilities.Resources.ListResourceTemplatesHandler = listResourceTemplatesHandler;
-        ServerCapabilities.Resources.ReadResourceHandler = readResourceHandler;
-        ServerCapabilities.Resources.ResourceCollection = resources;
-        ServerCapabilities.Resources.SubscribeToResourcesHandler = subscribeHandler;
-        ServerCapabilities.Resources.UnsubscribeFromResourcesHandler = unsubscribeHandler;
-        ServerCapabilities.Resources.ListChanged = listChanged;
-        ServerCapabilities.Resources.Subscribe = subscribe;
+        // Update the capability with the computed values
+        resourcesCapability.ListChanged = listChanged;
+        resourcesCapability.Subscribe = subscribe;
 
         SetHandler(
             RequestMethods.ResourcesList,
@@ -354,12 +354,14 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigurePrompts(McpServerOptions options)
     {
-        if (options.Capabilities?.Prompts is not { } promptsCapability)
+        // Check both new and old property names for backward compatibility
+        var promptsCapability = options.Capabilities?.PromptsCapability ?? options.Capabilities?.Prompts;
+        if (promptsCapability is null)
         {
             return;
         }
 
-        ServerCapabilities.Prompts = new();
+        ServerCapabilities.PromptsCapability = promptsCapability;
 
         var listPromptsHandler = promptsCapability.ListPromptsHandler ?? (static async (_, __) => new ListPromptsResult());
         var getPromptHandler = promptsCapability.GetPromptHandler ?? (static async (request, _) => throw new McpException($"Unknown prompt: '{request.Params?.Name}'", McpErrorCode.InvalidParams));
@@ -402,10 +404,8 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
             listChanged = true;
         }
 
-        ServerCapabilities.Prompts.ListPromptsHandler = listPromptsHandler;
-        ServerCapabilities.Prompts.GetPromptHandler = getPromptHandler;
-        ServerCapabilities.Prompts.PromptCollection = prompts;
-        ServerCapabilities.Prompts.ListChanged = listChanged;
+        // Update the capability with the computed value
+        promptsCapability.ListChanged = listChanged;
 
         SetHandler(
             RequestMethods.PromptsList,
@@ -422,12 +422,14 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureTools(McpServerOptions options)
     {
-        if (options.Capabilities?.Tools is not { } toolsCapability)
+        // Check both new and old property names for backward compatibility
+        var toolsCapability = options.Capabilities?.ToolsCapability ?? options.Capabilities?.Tools;
+        if (toolsCapability is null)
         {
             return;
         }
 
-        ServerCapabilities.Tools = new();
+        ServerCapabilities.ToolsCapability = toolsCapability;
 
         var listToolsHandler = toolsCapability.ListToolsHandler ?? (static async (_, __) => new ListToolsResult());
         var callToolHandler = toolsCapability.CallToolHandler ?? (static async (request, _) => throw new McpException($"Unknown tool: '{request.Params?.Name}'", McpErrorCode.InvalidParams));
@@ -470,10 +472,8 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
             listChanged = true;
         }
 
-        ServerCapabilities.Tools.ListToolsHandler = listToolsHandler;
-        ServerCapabilities.Tools.CallToolHandler = callToolHandler;
-        ServerCapabilities.Tools.ToolCollection = tools;
-        ServerCapabilities.Tools.ListChanged = listChanged;
+        // Update the capability with the computed value
+        toolsCapability.ListChanged = listChanged;
 
         SetHandler(
             RequestMethods.ToolsList,
@@ -490,11 +490,12 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureLogging(McpServerOptions options)
     {
+        // Check both new and old property names for backward compatibility
+        var loggingCapability = options.Capabilities?.LoggingCapability ?? options.Capabilities?.Logging;
         // We don't require that the handler be provided, as we always store the provided log level to the server.
-        var setLoggingLevelHandler = options.Capabilities?.Logging?.SetLoggingLevelHandler;
+        var setLoggingLevelHandler = loggingCapability?.SetLoggingLevelHandler;
 
-        ServerCapabilities.Logging = new();
-        ServerCapabilities.Logging.SetLoggingLevelHandler = setLoggingLevelHandler;
+        ServerCapabilities.LoggingCapability = loggingCapability ?? new LoggingCapability();
 
         RequestHandlers.Set(
             RequestMethods.LoggingSetLevel,

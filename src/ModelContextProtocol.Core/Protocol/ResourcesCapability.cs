@@ -12,10 +12,24 @@ namespace ModelContextProtocol.Protocol;
 public sealed class ResourcesCapability
 {
     /// <summary>
+    /// Gets or sets the wire protocol capability information that will be serialized and sent to clients.
+    /// </summary>
+    /// <remarks>
+    /// This contains only the properties that are relevant to clients and are part of the wire protocol,
+    /// such as whether the server supports subscriptions and list change notifications.
+    /// </remarks>
+    [JsonIgnore]
+    public ResourcesWireCapability Wire { get; set; } = new();
+
+    /// <summary>
     /// Gets or sets whether this server supports subscribing to resource updates.
     /// </summary>
     [JsonPropertyName("subscribe")]
-    public bool? Subscribe { get; set; }
+    public bool? Subscribe 
+    { 
+        get => Wire.Subscribe; 
+        set => Wire.Subscribe = value; 
+    }
 
     /// <summary>
     /// Gets or sets whether this server supports notifications for changes to the resource list.
@@ -27,7 +41,11 @@ public sealed class ResourcesCapability
     /// refresh their resource cache.
     /// </remarks>
     [JsonPropertyName("listChanged")]
-    public bool? ListChanged { get; set; }
+    public bool? ListChanged 
+    { 
+        get => Wire.ListChanged; 
+        set => Wire.ListChanged = value; 
+    }
 
     /// <summary>
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesTemplatesList"/> requests.

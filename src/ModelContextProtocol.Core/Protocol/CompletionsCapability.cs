@@ -22,7 +22,15 @@ namespace ModelContextProtocol.Protocol;
 /// </remarks>
 public sealed class CompletionsCapability
 {
-    // Currently empty in the spec, but may be extended in the future.
+    /// <summary>
+    /// Gets or sets the wire protocol capability information that will be serialized and sent to clients.
+    /// </summary>
+    /// <remarks>
+    /// This contains only the properties that are relevant to clients and are part of the wire protocol.
+    /// Currently empty in the spec, but may be extended in the future.
+    /// </remarks>
+    [JsonIgnore]
+    public CompletionsWireCapability Wire { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the handler for completion requests.
