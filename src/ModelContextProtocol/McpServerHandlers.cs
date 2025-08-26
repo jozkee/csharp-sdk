@@ -56,13 +56,13 @@ public sealed class McpServerHandlers
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The handler should return a list of available prompts when requested by a client.
-    /// It supports pagination through the cursor mechanism, where the client can make
-    /// repeated calls with the cursor returned by the previous call to retrieve more prompts.
+    /// This handler is invoked when a client requests a list of available prompts from the server
+    /// via a <see cref="RequestMethods.PromptsList"/> request. Results from this handler are returned
+    /// along with any prompts defined in the prompt collection.
     /// </para>
     /// <para>
-    /// This handler works alongside any prompts defined in the <see cref="McpServerPrompt"/> collection.
-    /// Prompts from both sources will be combined when returning results to clients.
+    /// The handler supports pagination through the cursor mechanism where the client can make
+    /// repeated calls with the cursor returned by the previous call to retrieve more prompts.
     /// </para>
     /// </remarks>
     public Func<RequestContext<ListPromptsRequestParams>, CancellationToken, ValueTask<ListPromptsResult>>? ListPromptsHandler { get; set; }
@@ -71,8 +71,15 @@ public sealed class McpServerHandlers
     /// Gets or sets the handler for <see cref="RequestMethods.PromptsGet"/> requests.
     /// </summary>
     /// <remarks>
-    /// This handler is invoked when a client requests details for a specific prompt that isn't found in the <see cref="McpServerPrompt"/> collection.
-    /// The handler should implement logic to fetch or generate the requested prompt and return appropriate results.
+    /// <para>
+    /// This handler is invoked when a client requests details for a specific prompt by name and provides arguments
+    /// for the prompt if needed. The handler receives the request context containing the prompt name and any arguments, 
+    /// and should return a <see cref="GetPromptResult"/> with the prompt messages and other details.
+    /// </para>
+    /// <para>
+    /// This handler will be invoked if the requested prompt name is not found in the prompt collection,
+    /// allowing for dynamic prompt generation or retrieval from external sources.
+    /// </para>
     /// </remarks>
     public Func<RequestContext<GetPromptRequestParams>, CancellationToken, ValueTask<GetPromptResult>>? GetPromptHandler { get; set; }
 
@@ -80,9 +87,10 @@ public sealed class McpServerHandlers
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesTemplatesList"/> requests.
     /// </summary>
     /// <remarks>
-    /// The handler should return a list of available resource templates when requested by a client.
-    /// It supports pagination through the cursor mechanism, where the client can make
-    /// repeated calls with the cursor returned by the previous call to retrieve more resource templates.
+    /// This handler is called when clients request available resource templates that can be used
+    /// to create resources within the Model Context Protocol server.
+    /// Resource templates define the structure and URI patterns for resources accessible in the system,
+    /// allowing clients to discover available resource types and their access patterns.
     /// </remarks>
     public Func<RequestContext<ListResourceTemplatesRequestParams>, CancellationToken, ValueTask<ListResourceTemplatesResult>>? ListResourceTemplatesHandler { get; set; }
 
@@ -90,9 +98,8 @@ public sealed class McpServerHandlers
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesList"/> requests.
     /// </summary>
     /// <remarks>
-    /// The handler should return a list of available resources when requested by a client.
-    /// It supports pagination through the cursor mechanism, where the client can make
-    /// repeated calls with the cursor returned by the previous call to retrieve more resources.
+    /// This handler responds to client requests for available resources and returns information about resources accessible through the server.
+    /// The implementation should return a <see cref="ListResourcesResult"/> with the matching resources.
     /// </remarks>
     public Func<RequestContext<ListResourcesRequestParams>, CancellationToken, ValueTask<ListResourcesResult>>? ListResourcesHandler { get; set; }
 
@@ -100,34 +107,22 @@ public sealed class McpServerHandlers
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesRead"/> requests.
     /// </summary>
     /// <remarks>
-    /// This handler is invoked when a client requests the content of a specific resource identified by its URI.
-    /// The handler should implement logic to locate and retrieve the requested resource.
+    /// This handler is responsible for retrieving the content of a specific resource identified by its URI in the Model Context Protocol.
+    /// When a client sends a resources/read request, this handler is invoked with the resource URI.
+    /// The handler should implement logic to locate and retrieve the requested resource, then return
+    /// its contents in a ReadResourceResult object.
     /// </remarks>
     public Func<RequestContext<ReadResourceRequestParams>, CancellationToken, ValueTask<ReadResourceResult>>? ReadResourceHandler { get; set; }
-
-    /// <summary>
-    /// Gets or sets the handler for <see cref="RequestMethods.CompletionComplete"/> requests.
-    /// </summary>
-    /// <remarks>
-    /// This handler provides auto-completion suggestions for prompt arguments or resource references in the Model Context Protocol.
-    /// The handler processes auto-completion requests, returning a list of suggestions based on the 
-    /// reference type and current argument value.
-    /// </remarks>
-    public Func<RequestContext<CompleteRequestParams>, CancellationToken, ValueTask<CompleteResult>>? CompleteHandler { get; set; }
 
     /// <summary>
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesSubscribe"/> requests.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This handler is invoked when a client wants to receive notifications about changes to specific resources or resource patterns.
-    /// The handler should implement logic to register the client's interest in the specified resources
-    /// and set up the necessary infrastructure to send notifications when those resources change.
-    /// </para>
-    /// <para>
-    /// After a successful subscription, the server should send resource change notifications to the client
-    /// whenever a relevant resource is created, updated, or deleted.
-    /// </para>
+    /// When a client sends a <see cref="RequestMethods.ResourcesSubscribe"/> request, this handler is invoked with the resource URI
+    /// to be subscribed to. The implementation should register the client's interest in receiving updates
+    /// for the specified resource.
+    /// Subscriptions allow clients to receive real-time notifications when resources change, without
+    /// requiring polling.
     /// </remarks>
     public Func<RequestContext<SubscribeRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SubscribeToResourcesHandler { get; set; }
 
@@ -135,92 +130,88 @@ public sealed class McpServerHandlers
     /// Gets or sets the handler for <see cref="RequestMethods.ResourcesUnsubscribe"/> requests.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This handler is invoked when a client wants to stop receiving notifications about previously subscribed resources.
-    /// The handler should implement logic to remove the client's subscriptions to the specified resources
-    /// and clean up any associated resources.
-    /// </para>
-    /// <para>
-    /// After a successful unsubscription, the server should no longer send resource change notifications
-    /// to the client for the specified resources.
-    /// </para>
+    /// When a client sends a <see cref="RequestMethods.ResourcesUnsubscribe"/> request, this handler is invoked with the resource URI
+    /// to be unsubscribed from. The implementation should remove the client's registration for receiving updates
+    /// about the specified resource.
     /// </remarks>
     public Func<RequestContext<UnsubscribeRequestParams>, CancellationToken, ValueTask<EmptyResult>>? UnsubscribeFromResourcesHandler { get; set; }
 
     /// <summary>
-    /// Gets or sets the handler for <see cref="RequestMethods.LoggingSetLevel"/> requests.
+    /// Gets or sets the handler for completion requests.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This handler processes <see cref="RequestMethods.LoggingSetLevel"/> requests from clients. When set, it enables
-    /// clients to control which log messages they receive by specifying a minimum severity threshold.
-    /// </para>
-    /// <para>
-    /// After handling a level change request, the server typically begins sending log messages
-    /// at or above the specified level to the client as notifications/message notifications.
-    /// </para>
+    /// This handler provides auto-completion suggestions for prompt arguments or resource references in the Model Context Protocol.
+    /// The handler receives a reference type (e.g., "ref/prompt" or "ref/resource") and the current argument value,
+    /// and should return appropriate completion suggestions.
     /// </remarks>
+    public Func<RequestContext<CompleteRequestParams>, CancellationToken, ValueTask<CompleteResult>>? CompleteHandler { get; set; }
+
+    /// <summary>
+    /// Gets or sets the handler for set logging level requests from clients.
+    /// </summary>
     public Func<RequestContext<SetLevelRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SetLoggingLevelHandler { get; set; }
 
     /// <summary>
-    /// Overwrite any handlers in McpServerOptions with non-null handlers from this instance.
+    /// Applies the configured handlers to the given McpServerOptions.
     /// </summary>
-    /// <param name="options"></param>
-    /// <returns></returns>
-    internal void OverwriteWithSetHandlers(McpServerOptions options)
+    /// <param name="options">The McpServerOptions to apply handlers to.</param>
+    internal void ApplyTo(McpServerOptions options)
     {
-        PromptsCapability? promptsCapability = options.Capabilities?.Prompts;
-        if (ListPromptsHandler is not null || GetPromptHandler is not null)
+        // Apply handlers to McpServerOptions instead of capability types
+        if (ListToolsHandler is not null || CallToolHandler is not null)
         {
-            promptsCapability ??= new();
-            promptsCapability.ListPromptsHandler = ListPromptsHandler ?? promptsCapability.ListPromptsHandler;
-            promptsCapability.GetPromptHandler = GetPromptHandler ?? promptsCapability.GetPromptHandler;
+            options.ListToolsHandler = ListToolsHandler ?? options.ListToolsHandler;
+            options.CallToolHandler = CallToolHandler ?? options.CallToolHandler;
+            
+            options.Capabilities ??= new();
+            options.Capabilities.Tools ??= new();
         }
 
-        ResourcesCapability? resourcesCapability = options.Capabilities?.Resources;
-        if (ListResourcesHandler is not null ||
-            ReadResourceHandler is not null)
+        if (ListPromptsHandler is not null || GetPromptHandler is not null)
         {
-            resourcesCapability ??= new();
-            resourcesCapability.ListResourceTemplatesHandler = ListResourceTemplatesHandler ?? resourcesCapability.ListResourceTemplatesHandler;
-            resourcesCapability.ListResourcesHandler = ListResourcesHandler ?? resourcesCapability.ListResourcesHandler;
-            resourcesCapability.ReadResourceHandler = ReadResourceHandler ?? resourcesCapability.ReadResourceHandler;
+            options.ListPromptsHandler = ListPromptsHandler ?? options.ListPromptsHandler;
+            options.GetPromptHandler = GetPromptHandler ?? options.GetPromptHandler;
+            
+            options.Capabilities ??= new();
+            options.Capabilities.Prompts ??= new();
+        }
+
+        if (ListResourcesHandler is not null ||
+            ReadResourceHandler is not null ||
+            ListResourceTemplatesHandler is not null)
+        {
+            options.ListResourceTemplatesHandler = ListResourceTemplatesHandler ?? options.ListResourceTemplatesHandler;
+            options.ListResourcesHandler = ListResourcesHandler ?? options.ListResourcesHandler;
+            options.ReadResourceHandler = ReadResourceHandler ?? options.ReadResourceHandler;
 
             if (SubscribeToResourcesHandler is not null || UnsubscribeFromResourcesHandler is not null)
             {
-                resourcesCapability.SubscribeToResourcesHandler = SubscribeToResourcesHandler ?? resourcesCapability.SubscribeToResourcesHandler;
-                resourcesCapability.UnsubscribeFromResourcesHandler = UnsubscribeFromResourcesHandler ?? resourcesCapability.UnsubscribeFromResourcesHandler;
-                resourcesCapability.Subscribe = true;
+                options.SubscribeToResourcesHandler = SubscribeToResourcesHandler ?? options.SubscribeToResourcesHandler;
+                options.UnsubscribeFromResourcesHandler = UnsubscribeFromResourcesHandler ?? options.UnsubscribeFromResourcesHandler;
+                
+                options.Capabilities ??= new();
+                options.Capabilities.Resources ??= new();
+                options.Capabilities.Resources.Subscribe = true;
             }
+
+            options.Capabilities ??= new();
+            options.Capabilities.Resources ??= new();
         }
 
-        ToolsCapability? toolsCapability = options.Capabilities?.Tools;
-        if (ListToolsHandler is not null || CallToolHandler is not null)
-        {
-            toolsCapability ??= new();
-            toolsCapability.ListToolsHandler = ListToolsHandler ?? toolsCapability.ListToolsHandler;
-            toolsCapability.CallToolHandler = CallToolHandler ?? toolsCapability.CallToolHandler;
-        }
-
-        LoggingCapability? loggingCapability = options.Capabilities?.Logging;
         if (SetLoggingLevelHandler is not null)
         {
-            loggingCapability ??= new();
-            loggingCapability.SetLoggingLevelHandler = SetLoggingLevelHandler;
+            options.SetLoggingLevelHandler = SetLoggingLevelHandler;
+            
+            options.Capabilities ??= new();
+            options.Capabilities.Logging ??= new();
         }
 
-        CompletionsCapability? completionsCapability = options.Capabilities?.Completions;
         if (CompleteHandler is not null)
         {
-            completionsCapability ??= new();
-            completionsCapability.CompleteHandler = CompleteHandler;
+            options.CompleteHandler = CompleteHandler;
+            
+            options.Capabilities ??= new();
+            options.Capabilities.Completions ??= new();
         }
-
-        options.Capabilities ??= new();
-        options.Capabilities.Prompts = promptsCapability;
-        options.Capabilities.Resources = resourcesCapability;
-        options.Capabilities.Tools = toolsCapability;
-        options.Capabilities.Logging = loggingCapability;
-        options.Capabilities.Completions = completionsCapability;
     }
 }

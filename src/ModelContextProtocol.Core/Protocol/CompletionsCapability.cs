@@ -1,4 +1,3 @@
-using ModelContextProtocol.Server;
 using System.Text.Json.Serialization;
 
 namespace ModelContextProtocol.Protocol;
@@ -23,15 +22,4 @@ namespace ModelContextProtocol.Protocol;
 public sealed class CompletionsCapability
 {
     // Currently empty in the spec, but may be extended in the future.
-
-    /// <summary>
-    /// Gets or sets the handler for completion requests.
-    /// </summary>
-    /// <remarks>
-    /// This handler provides auto-completion suggestions for prompt arguments or resource references in the Model Context Protocol.
-    /// The handler receives a reference type (e.g., "ref/prompt" or "ref/resource") and the current argument value,
-    /// and should return appropriate completion suggestions.
-    /// </remarks>
-    [JsonIgnore]
-    public Func<RequestContext<CompleteRequestParams>, CancellationToken, ValueTask<CompleteResult>>? CompleteHandler { get; set; }
 }

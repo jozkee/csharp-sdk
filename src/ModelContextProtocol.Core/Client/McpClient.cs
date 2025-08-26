@@ -41,55 +41,57 @@ internal sealed partial class McpClient : McpEndpoint, IMcpClient
 
         if (options.Capabilities is { } capabilities)
         {
-            if (capabilities.NotificationHandlers is { } notificationHandlers)
+            if (capabilities.Sampling is { } && options.SamplingHandler is null)
             {
-                NotificationHandlers.RegisterRange(notificationHandlers);
+                throw new InvalidOperationException("Sampling capability was set but no SamplingHandler was provided in McpClientOptions.");
             }
 
-            if (capabilities.Sampling is { } samplingCapability)
+            if (capabilities.Roots is { } && options.RootsHandler is null)
             {
-                if (samplingCapability.SamplingHandler is not { } samplingHandler)
-                {
-                    throw new InvalidOperationException("Sampling capability was set but it did not provide a handler.");
-                }
-
-                RequestHandlers.Set(
-                    RequestMethods.SamplingCreateMessage,
-                    (request, _, cancellationToken) => samplingHandler(
-                        request,
-                        request?.ProgressToken is { } token ? new TokenProgress(this, token) : NullProgress.Instance,
-                        cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.CreateMessageRequestParams,
-                    McpJsonUtilities.JsonContext.Default.CreateMessageResult);
+                throw new InvalidOperationException("Roots capability was set but no RootsHandler was provided in McpClientOptions.");
             }
 
-            if (capabilities.Roots is { } rootsCapability)
+            if (capabilities.Elicitation is { } && options.ElicitationHandler is null)
             {
-                if (rootsCapability.RootsHandler is not { } rootsHandler)
-                {
-                    throw new InvalidOperationException("Roots capability was set but it did not provide a handler.");
-                }
-
-                RequestHandlers.Set(
-                    RequestMethods.RootsList,
-                    (request, _, cancellationToken) => rootsHandler(request, cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.ListRootsRequestParams,
-                    McpJsonUtilities.JsonContext.Default.ListRootsResult);
+                throw new InvalidOperationException("Elicitation capability was set but no ElicitationHandler was provided in McpClientOptions.");
             }
+        }
 
-            if (capabilities.Elicitation is { } elicitationCapability)
-            {
-                if (elicitationCapability.ElicitationHandler is not { } elicitationHandler)
-                {
-                    throw new InvalidOperationException("Elicitation capability was set but it did not provide a handler.");
-                }
+        // Register notification handlers from McpClientOptions
+        if (options.NotificationHandlers is { } notificationHandlers)
+        {
+            NotificationHandlers.RegisterRange(notificationHandlers);
+        }
 
-                RequestHandlers.Set(
-                    RequestMethods.ElicitationCreate,
-                    (request, _, cancellationToken) => elicitationHandler(request, cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.ElicitRequestParams,
-                    McpJsonUtilities.JsonContext.Default.ElicitResult);
-            }
+        // Register handlers from McpClientOptions
+        if (options.SamplingHandler is { } samplingHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.SamplingCreateMessage,
+                (request, _, cancellationToken) => samplingHandler(
+                    request,
+                    request?.ProgressToken is { } token ? new TokenProgress(this, token) : NullProgress.Instance,
+                    cancellationToken),
+                McpJsonUtilities.JsonContext.Default.CreateMessageRequestParams,
+                McpJsonUtilities.JsonContext.Default.CreateMessageResult);
+        }
+
+        if (options.RootsHandler is { } rootsHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.RootsList,
+                (request, _, cancellationToken) => rootsHandler(request, cancellationToken),
+                McpJsonUtilities.JsonContext.Default.ListRootsRequestParams,
+                McpJsonUtilities.JsonContext.Default.ListRootsResult);
+        }
+
+        if (options.ElicitationHandler is { } elicitationHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.ElicitationCreate,
+                (request, _, cancellationToken) => elicitationHandler(request, cancellationToken),
+                McpJsonUtilities.JsonContext.Default.ElicitRequestParams,
+                McpJsonUtilities.JsonContext.Default.ElicitResult);
         }
     }
 
