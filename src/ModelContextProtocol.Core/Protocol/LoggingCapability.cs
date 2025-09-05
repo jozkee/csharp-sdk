@@ -13,10 +13,4 @@ namespace ModelContextProtocol.Protocol;
 public sealed class LoggingCapability
 {
     // Currently empty in the spec, but may be extended in the future
-
-    /// <summary>
-    /// Gets or sets the handler for set logging level requests from clients.
-    /// </summary>
-    [JsonIgnore]
-    public Func<RequestContext<SetLevelRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SetLoggingLevelHandler { get; set; }
 }

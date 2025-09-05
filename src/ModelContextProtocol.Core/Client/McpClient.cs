@@ -39,57 +39,48 @@ internal sealed partial class McpClient : McpEndpoint, IMcpClient
 
         EndpointName = clientTransport.Name;
 
-        if (options.Capabilities is { } capabilities)
+        if (options.NotificationHandlers is { } notificationHandlers)
         {
-            if (capabilities.NotificationHandlers is { } notificationHandlers)
-            {
-                NotificationHandlers.RegisterRange(notificationHandlers);
-            }
+            NotificationHandlers.RegisterRange(notificationHandlers);
+        }
 
-            if (capabilities.Sampling is { } samplingCapability)
-            {
-                if (samplingCapability.SamplingHandler is not { } samplingHandler)
-                {
-                    throw new InvalidOperationException("Sampling capability was set but it did not provide a handler.");
-                }
+        if (options.SamplingHandler is { } samplingHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.SamplingCreateMessage,
+                (request, _, cancellationToken) => samplingHandler(
+                    request,
+                    request?.ProgressToken is { } token ? new TokenProgress(this, token) : NullProgress.Instance,
+                    cancellationToken),
+                McpJsonUtilities.JsonContext.Default.CreateMessageRequestParams,
+                McpJsonUtilities.JsonContext.Default.CreateMessageResult);
 
-                RequestHandlers.Set(
-                    RequestMethods.SamplingCreateMessage,
-                    (request, _, cancellationToken) => samplingHandler(
-                        request,
-                        request?.ProgressToken is { } token ? new TokenProgress(this, token) : NullProgress.Instance,
-                        cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.CreateMessageRequestParams,
-                    McpJsonUtilities.JsonContext.Default.CreateMessageResult);
-            }
+            var capabilities = options.Capabilities ??= new ClientCapabilities();
+            capabilities.Sampling ??= new();
+        }
 
-            if (capabilities.Roots is { } rootsCapability)
-            {
-                if (rootsCapability.RootsHandler is not { } rootsHandler)
-                {
-                    throw new InvalidOperationException("Roots capability was set but it did not provide a handler.");
-                }
+        if (options.RootsHandler is { } rootsHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.RootsList,
+                (request, _, cancellationToken) => rootsHandler(request, cancellationToken),
+                McpJsonUtilities.JsonContext.Default.ListRootsRequestParams,
+                McpJsonUtilities.JsonContext.Default.ListRootsResult);
 
-                RequestHandlers.Set(
-                    RequestMethods.RootsList,
-                    (request, _, cancellationToken) => rootsHandler(request, cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.ListRootsRequestParams,
-                    McpJsonUtilities.JsonContext.Default.ListRootsResult);
-            }
+            var capabilities = options.Capabilities ??= new ClientCapabilities();
+            capabilities.Roots ??= new(); // listchange??
+        }
 
-            if (capabilities.Elicitation is { } elicitationCapability)
-            {
-                if (elicitationCapability.ElicitationHandler is not { } elicitationHandler)
-                {
-                    throw new InvalidOperationException("Elicitation capability was set but it did not provide a handler.");
-                }
+        if (options.ElicitationHandler is { } elicitationHandler)
+        {
+            RequestHandlers.Set(
+                RequestMethods.ElicitationCreate,
+                (request, _, cancellationToken) => elicitationHandler(request, cancellationToken),
+                McpJsonUtilities.JsonContext.Default.ElicitRequestParams,
+                McpJsonUtilities.JsonContext.Default.ElicitResult);
 
-                RequestHandlers.Set(
-                    RequestMethods.ElicitationCreate,
-                    (request, _, cancellationToken) => elicitationHandler(request, cancellationToken),
-                    McpJsonUtilities.JsonContext.Default.ElicitRequestParams,
-                    McpJsonUtilities.JsonContext.Default.ElicitResult);
-            }
+            var capabilities = options.Capabilities ??= new ClientCapabilities();
+            capabilities.Elicitation ??= new();
         }
     }
 
