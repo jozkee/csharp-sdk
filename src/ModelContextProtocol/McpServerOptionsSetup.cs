@@ -29,7 +29,7 @@ internal sealed class McpServerOptionsSetup(
         // a collection, add to it, otherwise create a new one. We want to maintain the identity
         // of an existing collection in case someone has provided their own derived type, wants
         // change notifications, etc.
-        McpServerPrimitiveCollection<McpServerTool> toolCollection = options.Capabilities?.Tools?.ToolCollection ?? [];
+        McpServerPrimitiveCollection<McpServerTool> toolCollection = options.ToolCollection ?? [];
         foreach (var tool in serverTools)
         {
             toolCollection.TryAdd(tool);
@@ -37,16 +37,16 @@ internal sealed class McpServerOptionsSetup(
 
         if (!toolCollection.IsEmpty)
         {
-            options.Capabilities ??= new();
-            options.Capabilities.Tools ??= new();
-            options.Capabilities.Tools.ToolCollection = toolCollection;
+            //options.Capabilities ??= new();
+            //options.Capabilities.Tools ??= new();
+            options.ToolCollection = toolCollection;
         }
 
         // Collect all of the provided prompts into a prompts collection. If the options already has
         // a collection, add to it, otherwise create a new one. We want to maintain the identity
         // of an existing collection in case someone has provided their own derived type, wants
         // change notifications, etc.
-        McpServerPrimitiveCollection<McpServerPrompt> promptCollection = options.Capabilities?.Prompts?.PromptCollection ?? [];
+        McpServerPrimitiveCollection<McpServerPrompt> promptCollection = options.PromptCollection ?? [];
         foreach (var prompt in serverPrompts)
         {
             promptCollection.TryAdd(prompt);
@@ -54,16 +54,16 @@ internal sealed class McpServerOptionsSetup(
 
         if (!promptCollection.IsEmpty)
         {
-            options.Capabilities ??= new();
-            options.Capabilities.Prompts ??= new();
-            options.Capabilities.Prompts.PromptCollection = promptCollection;
+            //options.Capabilities ??= new();
+            //options.Capabilities.Prompts ??= new();
+            options.PromptCollection = promptCollection;
         }
 
         // Collect all of the provided resources into a resources collection. If the options already has
         // a collection, add to it, otherwise create a new one. We want to maintain the identity
         // of an existing collection in case someone has provided their own derived type, wants
         // change notifications, etc.
-        McpServerResourceCollection resourceCollection = options.Capabilities?.Resources?.ResourceCollection ?? [];
+        McpServerResourceCollection resourceCollection = options.ResourceCollection ?? [];
         foreach (var resource in serverResources)
         {
             resourceCollection.TryAdd(resource);
@@ -71,9 +71,9 @@ internal sealed class McpServerOptionsSetup(
 
         if (!resourceCollection.IsEmpty)
         {
-            options.Capabilities ??= new();
-            options.Capabilities.Resources ??= new();
-            options.Capabilities.Resources.ResourceCollection = resourceCollection;
+            //options.Capabilities ??= new();
+            //options.Capabilities.Resources ??= new();
+            options.ResourceCollection = resourceCollection;
         }
 
         // Apply custom server handlers.

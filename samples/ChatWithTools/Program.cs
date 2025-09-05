@@ -41,7 +41,7 @@ var mcpClient = await McpClientFactory.CreateAsync(
     }),
     clientOptions: new()
     {
-        Capabilities = new() { Sampling = new() { SamplingHandler = samplingClient.CreateSamplingHandler() } },
+        SamplingHandler = samplingClient.CreateSamplingHandler()
     },
     loggerFactory: loggerFactory);
 
