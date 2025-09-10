@@ -14,11 +14,6 @@ namespace ModelContextProtocol.Server;
 /// the behavior of the MCP server by providing implementations for the various protocol operations.
 /// </para>
 /// <para>
-/// Handlers can be configured individually using the extension methods in <see cref="McpServerBuilderExtensions"/>
-/// such as <see cref="McpServerBuilderExtensions.WithListToolsHandler"/> and
-/// <see cref="McpServerBuilderExtensions.WithCallToolHandler"/>.
-/// </para>
-/// <para>
 /// When a client sends a request to the server, the appropriate handler is invoked to process the
 /// request and produce a response according to the protocol specification. Which handler is selected
 /// is done based on an ordinal, case-sensitive string comparison.
@@ -161,65 +156,4 @@ public sealed class McpServerHandlers
     /// </para>
     /// </remarks>
     public Func<RequestContext<SetLevelRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SetLoggingLevelHandler { get; set; }
-
-    /// <summary>
-    /// Overwrite any handlers in McpServerOptions with non-null handlers from this instance.
-    /// </summary>
-    /// <param name="options"></param>
-    /// <returns></returns>
-    internal void OverwriteWithSetHandlers(McpServerOptions options)
-    {
-        PromptsCapability? promptsCapability = options.Capabilities?.Prompts;
-        if (ListPromptsHandler is not null || GetPromptHandler is not null)
-        {
-            promptsCapability ??= new();
-            options.ListPromptsHandler = ListPromptsHandler ?? options.ListPromptsHandler;
-            options.GetPromptHandler = GetPromptHandler ?? options.GetPromptHandler;
-        }
-
-        ResourcesCapability? resourcesCapability = options.Capabilities?.Resources;
-        if (ListResourcesHandler is not null ||
-            ReadResourceHandler is not null)
-        {
-            resourcesCapability ??= new();
-            options.ListResourceTemplatesHandler = ListResourceTemplatesHandler ?? options.ListResourceTemplatesHandler;
-            options.ListResourcesHandler = ListResourcesHandler ?? options.ListResourcesHandler;
-            options.ReadResourceHandler = ReadResourceHandler ?? options.ReadResourceHandler;
-
-            if (SubscribeToResourcesHandler is not null || UnsubscribeFromResourcesHandler is not null)
-            {
-                options.SubscribeToResourcesHandler = SubscribeToResourcesHandler ?? options.SubscribeToResourcesHandler;
-                options.UnsubscribeFromResourcesHandler = UnsubscribeFromResourcesHandler ?? options.UnsubscribeFromResourcesHandler;
-                resourcesCapability.Subscribe = true;
-            }
-        }
-
-        ToolsCapability? toolsCapability = options.Capabilities?.Tools;
-        if (ListToolsHandler is not null || CallToolHandler is not null)
-        {
-            toolsCapability ??= new();
-            options.ListToolsHandler = ListToolsHandler ?? options.ListToolsHandler;
-            options.CallToolHandler = CallToolHandler ?? options.CallToolHandler;
-        }
-
-        LoggingCapability? loggingCapability = options.Capabilities?.Logging;
-        if (SetLoggingLevelHandler is not null)
-        {
-            loggingCapability ??= new();
-            options.SetLoggingLevelHandler = SetLoggingLevelHandler;
-        }
-
-        CompletionsCapability? completionsCapability = options.Capabilities?.Completions;
-        if (CompleteHandler is not null)
-        {
-            options.CompleteHandler = CompleteHandler;
-        }
-
-        options.Capabilities ??= new();
-        options.Capabilities.Prompts = promptsCapability;
-        options.Capabilities.Resources = resourcesCapability;
-        options.Capabilities.Tools = toolsCapability;
-        options.Capabilities.Logging = loggingCapability;
-        options.Capabilities.Completions = completionsCapability;
-    }
 }

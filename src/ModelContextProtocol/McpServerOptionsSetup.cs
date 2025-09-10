@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace ModelContextProtocol;
@@ -71,6 +72,64 @@ internal sealed class McpServerOptionsSetup(
         }
 
         // Apply custom server handlers.
-        serverHandlers.Value.OverwriteWithSetHandlers(options);
+        OverwriteWithSetHandlers(serverHandlers.Value, options);
+    }
+
+    /// <summary>
+    /// Overwrite any handlers in McpServerOptions with non-null handlers from this instance.
+    /// </summary>
+    private static void OverwriteWithSetHandlers(McpServerHandlers handlers, McpServerOptions options)
+    {
+        PromptsCapability? promptsCapability = options.Capabilities?.Prompts;
+        if (handlers.ListPromptsHandler is not null || handlers.GetPromptHandler is not null)
+        {
+            promptsCapability ??= new();
+            options.ListPromptsHandler = handlers.ListPromptsHandler ?? options.ListPromptsHandler;
+            options.GetPromptHandler = handlers.GetPromptHandler ?? options.GetPromptHandler;
+        }
+
+        ResourcesCapability? resourcesCapability = options.Capabilities?.Resources;
+        if (handlers.ListResourcesHandler is not null || handlers.ReadResourceHandler is not null)
+        {
+            resourcesCapability ??= new();
+            options.ListResourceTemplatesHandler = handlers.ListResourceTemplatesHandler ?? options.ListResourceTemplatesHandler;
+            options.ListResourcesHandler = handlers.ListResourcesHandler ?? options.ListResourcesHandler;
+            options.ReadResourceHandler = handlers.ReadResourceHandler ?? options.ReadResourceHandler;
+
+            if (handlers.SubscribeToResourcesHandler is not null || handlers.UnsubscribeFromResourcesHandler is not null)
+            {
+                options.SubscribeToResourcesHandler = handlers.SubscribeToResourcesHandler ?? options.SubscribeToResourcesHandler;
+                options.UnsubscribeFromResourcesHandler = handlers.UnsubscribeFromResourcesHandler ?? options.UnsubscribeFromResourcesHandler;
+                resourcesCapability.Subscribe = true;
+            }
+        }
+
+        ToolsCapability? toolsCapability = options.Capabilities?.Tools;
+        if (handlers.ListToolsHandler is not null || handlers.CallToolHandler is not null)
+        {
+            toolsCapability ??= new();
+            options.ListToolsHandler = handlers.ListToolsHandler ?? options.ListToolsHandler;
+            options.CallToolHandler = handlers.CallToolHandler ?? options.CallToolHandler;
+        }
+
+        LoggingCapability? loggingCapability = options.Capabilities?.Logging;
+        if (handlers.SetLoggingLevelHandler is not null)
+        {
+            loggingCapability ??= new();
+            options.SetLoggingLevelHandler = handlers.SetLoggingLevelHandler;
+        }
+
+        CompletionsCapability? completionsCapability = options.Capabilities?.Completions;
+        if (handlers.CompleteHandler is not null)
+        {
+            options.CompleteHandler = handlers.CompleteHandler;
+        }
+
+        options.Capabilities ??= new();
+        options.Capabilities.Prompts = promptsCapability;
+        options.Capabilities.Resources = resourcesCapability;
+        options.Capabilities.Tools = toolsCapability;
+        options.Capabilities.Logging = loggingCapability;
+        options.Capabilities.Completions = completionsCapability;
     }
 }
