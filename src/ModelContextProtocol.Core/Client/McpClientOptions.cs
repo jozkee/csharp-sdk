@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Protocol;
 
@@ -83,7 +82,6 @@ public sealed class McpClientOptions
     /// then be unregistered by disposing of the <see cref="IAsyncDisposable"/> returned from the method.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public IEnumerable<KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>>? NotificationHandlers { get; set; }
 
     /// <summary>
@@ -93,7 +91,6 @@ public sealed class McpClientOptions
     /// This handler is invoked when a client sends a <see cref="RequestMethods.RootsList"/> request to retrieve available roots.
     /// The handler receives request parameters and should return a <see cref="ListRootsResult"/> containing the collection of available roots.
     /// </remarks>
-    [JsonIgnore]
     public Func<ListRootsRequestParams?, CancellationToken, ValueTask<ListRootsResult>>? RootsHandler { get; set; }
 
     /// <summary>
@@ -109,7 +106,6 @@ public sealed class McpClientOptions
     /// It should return a <see cref="ElicitResult"/> containing the response to the elicitation request.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public Func<ElicitRequestParams?, CancellationToken, ValueTask<ElicitResult>>? ElicitationHandler { get; set; }
 
     /// <summary>
@@ -130,6 +126,5 @@ public sealed class McpClientOptions
     /// method with any implementation of <see cref="IChatClient"/>.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public Func<CreateMessageRequestParams?, IProgress<ProgressNotificationValue>, CancellationToken, ValueTask<CreateMessageResult>>? SamplingHandler { get; set; }
 }

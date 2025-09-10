@@ -1,6 +1,3 @@
-using System.Text.Json.Serialization;
-using Microsoft.Extensions.AI;
-using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
 namespace ModelContextProtocol.Server;
@@ -93,7 +90,6 @@ public sealed class McpServerOptions
     /// When used in conjunction with <see cref="ToolCollection"/>, both the tools from this handler
     /// and the tools from the collection will be combined to form the complete list of available tools.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<ListToolsRequestParams>, CancellationToken, ValueTask<ListToolsResult>>? ListToolsHandler { get; set; }
 
     /// <summary>
@@ -105,7 +101,6 @@ public sealed class McpServerOptions
     /// It receives a <see cref="RequestContext{CallToolRequestParams}"/> containing information about the tool 
     /// being called and its arguments, and should return a <see cref="CallToolResult"/> with the execution results.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<CallToolRequestParams>, CancellationToken, ValueTask<CallToolResult>>? CallToolHandler { get; set; }
 
     /// <summary>
@@ -119,7 +114,6 @@ public sealed class McpServerOptions
     /// being requested, and if the tool is not found in the <see cref="ToolCollection"/>, any specified <see cref="CallToolHandler"/>
     /// will be invoked as a fallback.
     /// </remarks>
-    [JsonIgnore]
     public McpServerPrimitiveCollection<McpServerTool>? ToolCollection { get; set; }
 
     /// <summary>Gets or sets notification handlers to register with the server.</summary>
@@ -139,7 +133,6 @@ public sealed class McpServerOptions
     /// then be unregistered by disposing of the <see cref="IAsyncDisposable"/> returned from the method.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public IEnumerable<KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>>? NotificationHandlers { get; set; }
 
     /// <summary>
@@ -151,7 +144,6 @@ public sealed class McpServerOptions
     /// Resource templates define the structure and URI patterns for resources accessible in the system,
     /// allowing clients to discover available resource types and their access patterns.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<ListResourceTemplatesRequestParams>, CancellationToken, ValueTask<ListResourceTemplatesResult>>? ListResourceTemplatesHandler { get; set; }
 
     /// <summary>
@@ -161,7 +153,6 @@ public sealed class McpServerOptions
     /// This handler responds to client requests for available resources and returns information about resources accessible through the server.
     /// The implementation should return a <see cref="ListResourcesResult"/> with the matching resources.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<ListResourcesRequestParams>, CancellationToken, ValueTask<ListResourcesResult>>? ListResourcesHandler { get; set; }
 
     /// <summary>
@@ -173,7 +164,6 @@ public sealed class McpServerOptions
     /// The handler should implement logic to locate and retrieve the requested resource, then return
     /// its contents in a ReadResourceResult object.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<ReadResourceRequestParams>, CancellationToken, ValueTask<ReadResourceResult>>? ReadResourceHandler { get; set; }
 
     /// <summary>
@@ -186,7 +176,6 @@ public sealed class McpServerOptions
     /// Subscriptions allow clients to receive real-time notifications when resources change, without
     /// requiring polling.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<SubscribeRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SubscribeToResourcesHandler { get; set; }
 
     /// <summary>
@@ -197,7 +186,6 @@ public sealed class McpServerOptions
     /// to be unsubscribed from. The implementation should remove the client's registration for receiving updates
     /// about the specified resource.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<UnsubscribeRequestParams>, CancellationToken, ValueTask<EmptyResult>>? UnsubscribeFromResourcesHandler { get; set; }
 
     /// <summary>
@@ -215,7 +203,6 @@ public sealed class McpServerOptions
     /// any handler registered for <see cref="ReadResourceHandler"/>.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public McpServerResourceCollection? ResourceCollection { get; set; }
 
     /// <summary>
@@ -226,7 +213,6 @@ public sealed class McpServerOptions
     /// via a <see cref="RequestMethods.PromptsList"/> request. Results from this handler are returned
     /// along with any prompts defined in <see cref="PromptCollection"/>.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<ListPromptsRequestParams>, CancellationToken, ValueTask<ListPromptsResult>>? ListPromptsHandler { get; set; }
 
     /// <summary>
@@ -243,7 +229,6 @@ public sealed class McpServerOptions
     /// allowing for dynamic prompt generation or retrieval from external sources.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<GetPromptRequestParams>, CancellationToken, ValueTask<GetPromptResult>>? GetPromptHandler { get; set; }
 
     /// <summary>
@@ -264,13 +249,11 @@ public sealed class McpServerOptions
     ///   If not found, it will invoke the <see cref="GetPromptHandler"/> as a fallback if one is set.
     /// </para>
     /// </remarks>
-    [JsonIgnore]
     public McpServerPrimitiveCollection<McpServerPrompt>? PromptCollection { get; set; }
 
     /// <summary>
     /// Gets or sets the handler for set logging level requests from clients.
     /// </summary>
-    [JsonIgnore]
     public Func<RequestContext<SetLevelRequestParams>, CancellationToken, ValueTask<EmptyResult>>? SetLoggingLevelHandler { get; set; }
 
     /// <summary>
@@ -281,6 +264,5 @@ public sealed class McpServerOptions
     /// The handler receives a reference type (e.g., "ref/prompt" or "ref/resource") and the current argument value,
     /// and should return appropriate completion suggestions.
     /// </remarks>
-    [JsonIgnore]
     public Func<RequestContext<CompleteRequestParams>, CancellationToken, ValueTask<CompleteResult>>? CompleteHandler { get; set; }
 }
