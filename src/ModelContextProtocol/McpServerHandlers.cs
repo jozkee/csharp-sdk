@@ -173,8 +173,8 @@ public sealed class McpServerHandlers
         if (ListPromptsHandler is not null || GetPromptHandler is not null)
         {
             promptsCapability ??= new();
-            promptsCapability.ListPromptsHandler = ListPromptsHandler ?? promptsCapability.ListPromptsHandler;
-            promptsCapability.GetPromptHandler = GetPromptHandler ?? promptsCapability.GetPromptHandler;
+            options.ListPromptsHandler = ListPromptsHandler ?? options.ListPromptsHandler;
+            options.GetPromptHandler = GetPromptHandler ?? options.GetPromptHandler;
         }
 
         ResourcesCapability? resourcesCapability = options.Capabilities?.Resources;
@@ -182,14 +182,14 @@ public sealed class McpServerHandlers
             ReadResourceHandler is not null)
         {
             resourcesCapability ??= new();
-            resourcesCapability.ListResourceTemplatesHandler = ListResourceTemplatesHandler ?? resourcesCapability.ListResourceTemplatesHandler;
-            resourcesCapability.ListResourcesHandler = ListResourcesHandler ?? resourcesCapability.ListResourcesHandler;
-            resourcesCapability.ReadResourceHandler = ReadResourceHandler ?? resourcesCapability.ReadResourceHandler;
+            options.ListResourceTemplatesHandler = ListResourceTemplatesHandler ?? options.ListResourceTemplatesHandler;
+            options.ListResourcesHandler = ListResourcesHandler ?? options.ListResourcesHandler;
+            options.ReadResourceHandler = ReadResourceHandler ?? options.ReadResourceHandler;
 
             if (SubscribeToResourcesHandler is not null || UnsubscribeFromResourcesHandler is not null)
             {
-                resourcesCapability.SubscribeToResourcesHandler = SubscribeToResourcesHandler ?? resourcesCapability.SubscribeToResourcesHandler;
-                resourcesCapability.UnsubscribeFromResourcesHandler = UnsubscribeFromResourcesHandler ?? resourcesCapability.UnsubscribeFromResourcesHandler;
+                options.SubscribeToResourcesHandler = SubscribeToResourcesHandler ?? options.SubscribeToResourcesHandler;
+                options.UnsubscribeFromResourcesHandler = UnsubscribeFromResourcesHandler ?? options.UnsubscribeFromResourcesHandler;
                 resourcesCapability.Subscribe = true;
             }
         }
@@ -198,22 +198,21 @@ public sealed class McpServerHandlers
         if (ListToolsHandler is not null || CallToolHandler is not null)
         {
             toolsCapability ??= new();
-            toolsCapability.ListToolsHandler = ListToolsHandler ?? toolsCapability.ListToolsHandler;
-            toolsCapability.CallToolHandler = CallToolHandler ?? toolsCapability.CallToolHandler;
+            options.ListToolsHandler = ListToolsHandler ?? options.ListToolsHandler;
+            options.CallToolHandler = CallToolHandler ?? options.CallToolHandler;
         }
 
         LoggingCapability? loggingCapability = options.Capabilities?.Logging;
         if (SetLoggingLevelHandler is not null)
         {
             loggingCapability ??= new();
-            loggingCapability.SetLoggingLevelHandler = SetLoggingLevelHandler;
+            options.SetLoggingLevelHandler = SetLoggingLevelHandler;
         }
 
         CompletionsCapability? completionsCapability = options.Capabilities?.Completions;
         if (CompleteHandler is not null)
         {
-            completionsCapability ??= new();
-            completionsCapability.CompleteHandler = CompleteHandler;
+            options.CompleteHandler = CompleteHandler;
         }
 
         options.Capabilities ??= new();
