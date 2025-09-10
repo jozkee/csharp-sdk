@@ -68,7 +68,7 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
         ConfigurePing();
 
         // Register any notification handlers that were provided.
-        if (options.NotificationHandlers is { } notificationHandlers)
+        if (options.Handlers?.NotificationHandlers is { } notificationHandlers)
         {
             NotificationHandlers.RegisterRange(notificationHandlers);
         }
@@ -190,7 +190,7 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureCompletion(McpServerOptions options)
     {
-        if (options.CompleteHandler is not { } completeHandler)
+        if (options.Handlers?.CompleteHandler is not { } completeHandler)
         {
             return;
         }
@@ -211,11 +211,11 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureResources(McpServerOptions options)
     {
-        var listResourcesHandler = options.ListResourcesHandler;
-        var listResourceTemplatesHandler = options.ListResourceTemplatesHandler;
-        var readResourceHandler = options.ReadResourceHandler;
-        var subscribeHandler = options.SubscribeToResourcesHandler;
-        var unsubscribeHandler = options.UnsubscribeFromResourcesHandler;
+        var listResourcesHandler = options.Handlers?.ListResourcesHandler;
+        var listResourceTemplatesHandler = options.Handlers?.ListResourceTemplatesHandler;
+        var readResourceHandler = options.Handlers?.ReadResourceHandler;
+        var subscribeHandler = options.Handlers?.SubscribeToResourcesHandler;
+        var unsubscribeHandler = options.Handlers?.UnsubscribeFromResourcesHandler;
         var resources = options.ResourceCollection;
         
         if (listResourcesHandler is null && listResourceTemplatesHandler is null && readResourceHandler is null && 
@@ -352,8 +352,8 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigurePrompts(McpServerOptions options)
     {
-        var listPromptsHandler = options.ListPromptsHandler;
-        var getPromptHandler = options.GetPromptHandler;
+        var listPromptsHandler = options.Handlers?.ListPromptsHandler;
+        var getPromptHandler = options.Handlers?.GetPromptHandler;
         var prompts = options.PromptCollection;
         
         if (listPromptsHandler is null && getPromptHandler is null && prompts is null)
@@ -420,8 +420,8 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
 
     private void ConfigureTools(McpServerOptions options)
     {
-        var listToolsHandler = options.ListToolsHandler;
-        var callToolHandler = options.CallToolHandler;
+        var listToolsHandler = options.Handlers?.ListToolsHandler;
+        var callToolHandler = options.Handlers?.CallToolHandler;
         var tools = options.ToolCollection;
         
         if (listToolsHandler is null && callToolHandler is null && tools is null)
@@ -489,7 +489,7 @@ internal sealed class McpServer : McpEndpoint, IMcpServer
     private void ConfigureLogging(McpServerOptions options)
     {
         // We don't require that the handler be provided, as we always store the provided log level to the server.
-        var setLoggingLevelHandler = options.SetLoggingLevelHandler;
+        var setLoggingLevelHandler = options.Handlers?.SetLoggingLevelHandler;
 
         ServerCapabilities.Logging = new();
 

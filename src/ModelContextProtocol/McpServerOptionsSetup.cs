@@ -80,26 +80,28 @@ internal sealed class McpServerOptionsSetup(
     /// </summary>
     private static void OverwriteWithSetHandlers(McpServerHandlers handlers, McpServerOptions options)
     {
+        McpServerHandlers optionsHandlers = options.Handlers ??= new();
+
         PromptsCapability? promptsCapability = options.Capabilities?.Prompts;
         if (handlers.ListPromptsHandler is not null || handlers.GetPromptHandler is not null)
         {
             promptsCapability ??= new();
-            options.ListPromptsHandler = handlers.ListPromptsHandler ?? options.ListPromptsHandler;
-            options.GetPromptHandler = handlers.GetPromptHandler ?? options.GetPromptHandler;
+            optionsHandlers.ListPromptsHandler = handlers.ListPromptsHandler ?? optionsHandlers.ListPromptsHandler;
+            optionsHandlers.GetPromptHandler = handlers.GetPromptHandler ?? optionsHandlers.GetPromptHandler;
         }
 
         ResourcesCapability? resourcesCapability = options.Capabilities?.Resources;
         if (handlers.ListResourcesHandler is not null || handlers.ReadResourceHandler is not null)
         {
             resourcesCapability ??= new();
-            options.ListResourceTemplatesHandler = handlers.ListResourceTemplatesHandler ?? options.ListResourceTemplatesHandler;
-            options.ListResourcesHandler = handlers.ListResourcesHandler ?? options.ListResourcesHandler;
-            options.ReadResourceHandler = handlers.ReadResourceHandler ?? options.ReadResourceHandler;
+            optionsHandlers.ListResourceTemplatesHandler = handlers.ListResourceTemplatesHandler ?? optionsHandlers.ListResourceTemplatesHandler;
+            optionsHandlers.ListResourcesHandler = handlers.ListResourcesHandler ?? optionsHandlers.ListResourcesHandler;
+            optionsHandlers.ReadResourceHandler = handlers.ReadResourceHandler ?? optionsHandlers.ReadResourceHandler;
 
             if (handlers.SubscribeToResourcesHandler is not null || handlers.UnsubscribeFromResourcesHandler is not null)
             {
-                options.SubscribeToResourcesHandler = handlers.SubscribeToResourcesHandler ?? options.SubscribeToResourcesHandler;
-                options.UnsubscribeFromResourcesHandler = handlers.UnsubscribeFromResourcesHandler ?? options.UnsubscribeFromResourcesHandler;
+                optionsHandlers.SubscribeToResourcesHandler = handlers.SubscribeToResourcesHandler ?? optionsHandlers.SubscribeToResourcesHandler;
+                optionsHandlers.UnsubscribeFromResourcesHandler = handlers.UnsubscribeFromResourcesHandler ?? optionsHandlers.UnsubscribeFromResourcesHandler;
                 resourcesCapability.Subscribe = true;
             }
         }
@@ -108,21 +110,21 @@ internal sealed class McpServerOptionsSetup(
         if (handlers.ListToolsHandler is not null || handlers.CallToolHandler is not null)
         {
             toolsCapability ??= new();
-            options.ListToolsHandler = handlers.ListToolsHandler ?? options.ListToolsHandler;
-            options.CallToolHandler = handlers.CallToolHandler ?? options.CallToolHandler;
+            optionsHandlers.ListToolsHandler = handlers.ListToolsHandler ?? optionsHandlers.ListToolsHandler;
+            optionsHandlers.CallToolHandler = handlers.CallToolHandler ?? optionsHandlers.CallToolHandler;
         }
 
         LoggingCapability? loggingCapability = options.Capabilities?.Logging;
         if (handlers.SetLoggingLevelHandler is not null)
         {
             loggingCapability ??= new();
-            options.SetLoggingLevelHandler = handlers.SetLoggingLevelHandler;
+            optionsHandlers.SetLoggingLevelHandler = handlers.SetLoggingLevelHandler;
         }
 
         CompletionsCapability? completionsCapability = options.Capabilities?.Completions;
         if (handlers.CompleteHandler is not null)
         {
-            options.CompleteHandler = handlers.CompleteHandler;
+            optionsHandlers.CompleteHandler = handlers.CompleteHandler;
         }
 
         options.Capabilities ??= new();
