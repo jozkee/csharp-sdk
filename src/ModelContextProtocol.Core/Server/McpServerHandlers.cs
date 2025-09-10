@@ -1,4 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Protocol;
 
 namespace ModelContextProtocol.Server;
@@ -10,12 +9,12 @@ namespace ModelContextProtocol.Server;
 /// <para>
 /// This class provides a centralized collection of delegates that implement various capabilities of the Model Context Protocol.
 /// Each handler in this class corresponds to a specific endpoint in the Model Context Protocol and
-/// is responsible for processing a particular type of request. The handlers are used to customize
+/// is responsible for processing a particular type of message. The handlers are used to customize
 /// the behavior of the MCP server by providing implementations for the various protocol operations.
 /// </para>
 /// <para>
-/// When a client sends a request to the server, the appropriate handler is invoked to process the
-/// request and produce a response according to the protocol specification. Which handler is selected
+/// When a client sends a message to the server, the appropriate handler is invoked to process it
+/// according to the protocol specification. Which handler is selected
 /// is done based on an ordinal, case-sensitive string comparison.
 /// </para>
 /// </remarks>

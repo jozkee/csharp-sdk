@@ -63,14 +63,17 @@ public class McpClientFactoryTests
         // Arrange
         var clientOptions = new McpClientOptions
         {
-            SamplingHandler = async (c, p, t) => new CreateMessageResult 
-            { 
-                Content = new TextContentBlock { Text = "result" }, 
-                Model = "test-model", 
-                Role = Role.User, 
-                StopReason = "endTurn" 
+            Handlers = new()
+            {
+                SamplingHandler = async (c, p, t) => new CreateMessageResult 
+                { 
+                    Content = new TextContentBlock { Text = "result" }, 
+                    Model = "test-model", 
+                    Role = Role.User, 
+                    StopReason = "endTurn" 
+                },
+                RootsHandler = async (t, r) => new ListRootsResult { Roots = [] }
             },
-            RootsHandler = async (t, r) => new ListRootsResult { Roots = [] },
             Capabilities = new ClientCapabilities {
                 Roots = new RootsCapability
                 {

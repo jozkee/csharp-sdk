@@ -272,15 +272,18 @@ public partial class ClientIntegrationTests : LoggedTest, IClassFixture<ClientIn
         TaskCompletionSource<bool> tcs = new();
         await using var client = await _fixture.CreateClientAsync(clientId, new()
         {
-            NotificationHandlers =
-            [
-                new(NotificationMethods.ResourceUpdatedNotification, (notification, cancellationToken) =>
-                {
-                    var notificationParams = JsonSerializer.Deserialize<ResourceUpdatedNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
-                    tcs.TrySetResult(true);
-                    return default;
-                })
-            ]
+            Handlers = new()
+            {
+                NotificationHandlers =
+                [
+                    new(NotificationMethods.ResourceUpdatedNotification, (notification, cancellationToken) =>
+                    {
+                        var notificationParams = JsonSerializer.Deserialize<ResourceUpdatedNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
+                        tcs.TrySetResult(true);
+                        return default;
+                    })
+                ]
+            }
         });
 
         await client.SubscribeToResourceAsync("test://static/resource/1", TestContext.Current.CancellationToken);
@@ -299,15 +302,18 @@ public partial class ClientIntegrationTests : LoggedTest, IClassFixture<ClientIn
         TaskCompletionSource<bool> receivedNotification = new();
         await using var client = await _fixture.CreateClientAsync(clientId, new()
         {
-            NotificationHandlers =
-            [
-                new(NotificationMethods.ResourceUpdatedNotification, (notification, cancellationToken) =>
-                {
-                    var notificationParams = JsonSerializer.Deserialize<ResourceUpdatedNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
-                    receivedNotification.TrySetResult(true);
-                    return default;
-                })
-            ]
+            Handlers = new()
+            {
+                NotificationHandlers =
+                [
+                    new(NotificationMethods.ResourceUpdatedNotification, (notification, cancellationToken) =>
+                    {
+                        var notificationParams = JsonSerializer.Deserialize<ResourceUpdatedNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
+                        receivedNotification.TrySetResult(true);
+                        return default;
+                    })
+                ]
+            }
         });
         await client.SubscribeToResourceAsync("test://static/resource/1", TestContext.Current.CancellationToken);
 
@@ -364,16 +370,19 @@ public partial class ClientIntegrationTests : LoggedTest, IClassFixture<ClientIn
         int samplingHandlerCalls = 0;
         await using var client = await _fixture.CreateClientAsync(clientId, new()
         {
-            SamplingHandler = async (_, _, _) =>
+            Handlers = new()
             {
-                samplingHandlerCalls++;
-                return new CreateMessageResult
+                SamplingHandler = async (_, _, _) =>
                 {
-                    Model = "test-model",
-                    Role = Role.Assistant,
-                    Content = new TextContentBlock { Text = "Test response" },
-                };
-            },
+                    samplingHandlerCalls++;
+                    return new CreateMessageResult
+                    {
+                        Model = "test-model",
+                        Role = Role.Assistant,
+                        Content = new TextContentBlock { Text = "Test response" },
+                    };
+                },
+            }
         });
 
         // Call the server's sampleLLM tool which should trigger our sampling handler
@@ -517,7 +526,10 @@ public partial class ClientIntegrationTests : LoggedTest, IClassFixture<ClientIn
             .CreateSamplingHandler();
         await using var client = await McpClientFactory.CreateAsync(new StdioClientTransport(_fixture.EverythingServerTransportOptions), new()
         {
-            SamplingHandler = samplingHandler,
+            Handlers = new()
+            {
+                SamplingHandler = samplingHandler,
+            }
         }, cancellationToken: TestContext.Current.CancellationToken);
 
         var result = await client.CallToolAsync("sampleLLM", new Dictionary<string, object?>()
@@ -539,18 +551,21 @@ public partial class ClientIntegrationTests : LoggedTest, IClassFixture<ClientIn
         TaskCompletionSource<bool> receivedNotification = new();
         await using var client = await _fixture.CreateClientAsync(clientId, new()
         {
-            NotificationHandlers =
-            [
-                new(NotificationMethods.LoggingMessageNotification, (notification, cancellationToken) =>
-                {
-                    var loggingMessageNotificationParameters = JsonSerializer.Deserialize<LoggingMessageNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
-                    if (loggingMessageNotificationParameters is not null)
+            Handlers = new()
+            {
+                NotificationHandlers =
+                [
+                    new(NotificationMethods.LoggingMessageNotification, (notification, cancellationToken) =>
                     {
-                        receivedNotification.TrySetResult(true);
-                    }
-                    return default;
-                })
-            ]
+                        var loggingMessageNotificationParameters = JsonSerializer.Deserialize<LoggingMessageNotificationParams>(notification.Params, McpJsonUtilities.DefaultOptions);
+                        if (loggingMessageNotificationParameters is not null)
+                        {
+                            receivedNotification.TrySetResult(true);
+                        }
+                        return default;
+                    })
+                ]
+            }
         });
 
         // act

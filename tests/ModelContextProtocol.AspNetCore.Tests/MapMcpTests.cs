@@ -134,21 +134,24 @@ public abstract class MapMcpTests(ITestOutputHelper testOutputHelper) : KestrelI
         var sampleCount = 0;
         var clientOptions = new McpClientOptions
         {
-            SamplingHandler = async (parameters, _, _) =>
+            Handlers = new()
             {
-                Assert.NotNull(parameters?.Messages);
-                var message = Assert.Single(parameters.Messages);
-                Assert.Equal(Role.User, message.Role);
-                Assert.Equal("Test prompt for sampling", Assert.IsType<TextContentBlock>(message.Content).Text);
-
-                sampleCount++;
-                return new CreateMessageResult
+                SamplingHandler = async (parameters, _, _) =>
                 {
-                    Model = "test-model",
-                    Role = Role.Assistant,
-                    Content = new TextContentBlock { Text = "Sampling response from client" },
-                };
-            },
+                    Assert.NotNull(parameters?.Messages);
+                    var message = Assert.Single(parameters.Messages);
+                    Assert.Equal(Role.User, message.Role);
+                    Assert.Equal("Test prompt for sampling", Assert.IsType<TextContentBlock>(message.Content).Text);
+
+                    sampleCount++;
+                    return new CreateMessageResult
+                    {
+                        Model = "test-model",
+                        Role = Role.Assistant,
+                        Content = new TextContentBlock { Text = "Sampling response from client" },
+                    };
+                }
+            }
         };
 
         await using var mcpClient = await ConnectAsync(clientOptions: clientOptions);

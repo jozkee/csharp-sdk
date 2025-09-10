@@ -9,7 +9,7 @@ namespace ModelContextProtocol.Protocol;
 /// </para>
 /// <para>
 /// When this capability is enabled, an MCP server can request the client to provide additional information
-/// during interactions. The client must set a <see cref="ModelContextProtocol.Client.McpClientOptions.ElicitationHandler"/> to process these requests.
+/// during interactions. The client must set a <see cref="ModelContextProtocol.Client.McpClientHandlers.ElicitationHandler"/> to process these requests.
 /// </para>
 /// </remarks>
 public sealed class ElicitationCapability

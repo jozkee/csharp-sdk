@@ -131,7 +131,7 @@ public sealed class McpServerOptions
     public McpServerPrimitiveCollection<McpServerPrompt>? PromptCollection { get; set; }
 
     /// <summary>
-    /// Gets or sets the handlers to be used by the server.
+    /// Gets or sets the container of handlers used by the server for processing protocol messages.
     /// </summary>
     public McpServerHandlers? Handlers { get; set; }
 }
