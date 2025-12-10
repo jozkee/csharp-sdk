@@ -421,7 +421,16 @@ public class Program
         }
 
         builder.Services.AddMcpServer(ConfigureOptions)
-            .WithHttpTransport();
+            .WithHttpTransport(httpOptions =>
+            {
+                // Log headers for testing purposes
+                httpOptions.ConfigureSessionOptions = (httpContext, serverOptions, ct) =>
+                {
+                    var logger = httpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+                    logger.LogInformation(JsonSerializer.Serialize(httpContext.Request.Headers));
+                    return Task.CompletedTask;
+                };
+            });
 
         var app = builder.Build();
 
