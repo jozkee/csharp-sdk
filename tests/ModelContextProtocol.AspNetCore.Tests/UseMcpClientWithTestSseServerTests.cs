@@ -45,11 +45,7 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
             .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
             .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>(
                 (msgs, opts, ct) => state.CapturedOptions = opts)
-            .ReturnsAsync(new ChatResponse([new ChatMessage(ChatRole.Assistant, "Dummy response")])
-            {
-                ModelId = "test-model",
-                FinishReason = ChatFinishReason.Stop
-            });
+            .ReturnsAsync(new ChatResponse([new ChatMessage(ChatRole.Assistant, "Dummy response")]));
 
         mockInnerClient
             .Setup(c => c.GetStreamingResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
@@ -64,13 +60,7 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
 
         static async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await Task.Yield();
-            yield return new ChatResponseUpdate
-            {
-                Role = ChatRole.Assistant,
-                Contents = [new TextContent("Dummy response")],
-                FinishReason = ChatFinishReason.Stop,
-            };
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "Dummy response");
         }
     }
 
@@ -171,69 +161,54 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
         Assert.Contains(_fixture.ServerLogs, log => log.Message.Contains(@"""Authorization"":[""Bearer test-bearer-token-12345""]"));
     }
 
+    public static IEnumerable<object?[]> UseMcpClient_ApprovalsWorkCorrectly_TestData()
+    {
+        string[] allToolNames = ["echo", "echoSessionId", "sampleLLM"];
+        foreach (var streaming in new[] { false, true })
+        {
+            yield return new object?[] { streaming, new HostedMcpServerToolNeverRequireApprovalMode(), (string[])[], allToolNames };
+            yield return new object?[] { streaming, new HostedMcpServerToolAlwaysRequireApprovalMode(), allToolNames, (string[])[] };
+            yield return new object?[] { streaming, null, allToolNames, (string[])[] };
+            // specific mode with empty lists - all tools should default to requiring approval
+            yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode([], []), allToolNames, (string[])[] };
+            // specific mode with one tool always requiring approval - the other two should default to requiring approval
+            yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode(["echo"], []), allToolNames, (string[])[] };
+            // specific mode with one tool never requiring approval - the other two should default to requiring approval
+            yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode([], ["echo"]), (string[])["echoSessionId", "sampleLLM"], (string[])["echo"] };
+        }
+    }
+
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UseMcpClient_ApprovalsWorkCorrectly(bool streaming)
+    [MemberData(nameof(UseMcpClient_ApprovalsWorkCorrectly_TestData))]
+    public async Task UseMcpClient_ApprovalsWorkCorrectly(
+        bool streaming, 
+        HostedMcpServerToolApprovalMode? approvalMode,
+        string[] expectedApprovalRequiredAIFunctions,
+        string[] expectedNormalAIFunctions)
     {
         // Arrange
         IChatClient sut = CreateTestChatClient(out var callbackState);
-        var alwaysRequireApprovalOptions = new ChatOptions
+        var mcpTool = new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
         {
-            Tools = [new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
-            {
-                ApprovalMode = new HostedMcpServerToolAlwaysRequireApprovalMode()
-            }]
+            ApprovalMode = approvalMode
         };
-        var neverRequireApprovalOptions = new ChatOptions
-        {
-            Tools = [new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
-            {
-                ApprovalMode = new HostedMcpServerToolNeverRequireApprovalMode()
-            }]
-        };
-        var specificApprovalOptions = new ChatOptions
-        {
-            Tools = [new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
-            {
-                ApprovalMode = new HostedMcpServerToolRequireSpecificApprovalMode(
-                    alwaysRequireApprovalToolNames: ["echo"],
-                    neverRequireApprovalToolNames: ["sampleLLM"])
-            }]
-        };
+        var options = new ChatOptions { Tools = [mcpTool] };
 
-        // Act - Test with AlwaysRequireApproval mode
-        await GetResponseAsync(sut, alwaysRequireApprovalOptions, streaming);
+        // Act
+        await GetResponseAsync(sut, options, streaming);
 
-        // Assert - All tools should be wrapped in ApprovalRequiredAIFunction
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        Assert.Equal(3, callbackState.CapturedOptions.Tools.Count);
-        
-        // All tools should require approval
-        foreach (var tool in callbackState.CapturedOptions.Tools)
-        {
-            // The implementation wraps tools with approval requirements
-            // We can verify the approval by checking if the tool is of the approval wrapper type
-            // or by checking metadata/additional properties
-            Assert.NotNull(tool);
-        }
-
-        // Act - Test with NeverRequireApproval mode
-        await GetResponseAsync(sut, neverRequireApprovalOptions, streaming);
-
-        // Assert - Tools should not require approval
+        // Assert
         Assert.NotNull(callbackState.CapturedOptions);
         Assert.NotNull(callbackState.CapturedOptions.Tools);
         Assert.Equal(3, callbackState.CapturedOptions.Tools.Count);
 
-        // Act - Test with specific tool approval mode
-        await GetResponseAsync(sut, specificApprovalOptions, streaming);
+        var toolsRequiringApproval = callbackState.CapturedOptions.Tools
+            .Where(t => t is ApprovalRequiredAIFunction).Select(t => t.Name);
 
-        // Assert - Mixed approval requirements based on tool names
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        Assert.Equal(3, callbackState.CapturedOptions.Tools.Count);
-        // The specific approval logic is handled in the implementation
+        var toolsNotRequiringApproval = callbackState.CapturedOptions.Tools
+            .Where(t => t is not ApprovalRequiredAIFunction).Select(t => t.Name);
+
+        Assert.Equivalent(expectedApprovalRequiredAIFunctions, toolsRequiringApproval);
+        Assert.Equivalent(expectedNormalAIFunctions, toolsNotRequiringApproval);
     }
 }

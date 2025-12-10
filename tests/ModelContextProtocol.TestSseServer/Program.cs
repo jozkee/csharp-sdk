@@ -38,7 +38,7 @@ public class Program
 
         Console.WriteLine("Registering handlers.");
 
-        #region Helped method
+        #region Helper method
         static CreateMessageRequestParams CreateRequestSamplingParams(string context, string uri, int maxTokens = 100)
         {
             return new CreateMessageRequestParams
