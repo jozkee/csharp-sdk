@@ -84,7 +84,8 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
     {
         // Arrange
         IChatClient sut = CreateTestChatClient(out var callbackState);
-        var options = new ChatOptions { Tools = [new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)] };
+        var mcpTool = new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint);
+        var options = new ChatOptions { Tools = [mcpTool] };
 
         // Act
         await GetResponseAsync(sut, options, streaming);
@@ -107,12 +108,13 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
         // Arrange
         IChatClient sut = CreateTestChatClient(out var callbackState);
         var regularTool = AIFunctionFactory.Create(() => "regular tool result", "RegularTool");
+        var mcpTool = new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint);
         var options = new ChatOptions
         {
             Tools =
             [
                 regularTool,
-                new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
+                mcpTool
             ]
         };
 
@@ -138,12 +140,13 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
         // Arrange
         const string testToken = "test-bearer-token-12345";
         IChatClient sut = CreateTestChatClient(out var callbackState);
+        var mcpTool = new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
+        {
+            AuthorizationToken = testToken
+        };
         var options = new ChatOptions
         {
-            Tools = [new HostedMcpServerTool(_transportOptions.Name!, _transportOptions.Endpoint)
-            {
-                AuthorizationToken = testToken
-            }]
+            Tools = [mcpTool]
         };
 
         // Act
@@ -169,11 +172,11 @@ public class UseMcpClientWithTestSseServerTests : LoggedTest, IClassFixture<SseS
             yield return new object?[] { streaming, new HostedMcpServerToolNeverRequireApprovalMode(), (string[])[], allToolNames };
             yield return new object?[] { streaming, new HostedMcpServerToolAlwaysRequireApprovalMode(), allToolNames, (string[])[] };
             yield return new object?[] { streaming, null, allToolNames, (string[])[] };
-            // specific mode with empty lists - all tools should default to requiring approval
+            // Specific mode with empty lists - all tools should default to requiring approval.
             yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode([], []), allToolNames, (string[])[] };
-            // specific mode with one tool always requiring approval - the other two should default to requiring approval
+            // Specific mode with one tool always requiring approval - the other two should default to requiring approval.
             yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode(["echo"], []), allToolNames, (string[])[] };
-            // specific mode with one tool never requiring approval - the other two should default to requiring approval
+            // Specific mode with one tool never requiring approval - the other two should default to requiring approval.
             yield return new object?[] { streaming, new HostedMcpServerToolRequireSpecificApprovalMode([], ["echo"]), (string[])["echoSessionId", "sampleLLM"], (string[])["echo"] };
         }
     }
