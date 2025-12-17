@@ -1,12 +1,11 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using ModelContextProtocol.Client;
 
-namespace ModelContextProtocol;
+namespace ModelContextProtocol.Client;
 
 /// <summary>
 /// Extension methods for adding MCP client support to chat clients.
@@ -52,7 +51,7 @@ public static class McpChatClientBuilderExtensions
         private readonly ILogger _logger;
         private readonly HttpClient _httpClient;
         private readonly bool _ownsHttpClient;
-        private readonly ConcurrentDictionary<string, Task<McpClient>> _mcpClientTasks = [];
+        private readonly McpClientTasksLruCache _lruCache;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="McpChatClient"/> class.
@@ -67,6 +66,7 @@ public static class McpChatClientBuilderExtensions
             _logger = (ILogger?)loggerFactory?.CreateLogger<McpChatClient>() ?? NullLogger.Instance;
             _httpClient = httpClient ?? new HttpClient();
             _ownsHttpClient = httpClient is null;
+            _lruCache = new McpClientTasksLruCache(capacity: 20);
         }
 
         /// <inheritdoc/>
@@ -163,19 +163,7 @@ public static class McpChatClientBuilderExtensions
                     _httpClient?.Dispose();
                 }
 
-                if (_mcpClientTasks is not null)
-                {
-                    // Dispose of all cached MCP clients.
-                    foreach (var clientTask in _mcpClientTasks.Values)
-                    {
-                        if (clientTask.Status == TaskStatus.RanToCompletion)
-                        {
-                            _ = clientTask.Result.DisposeAsync();
-                        }
-                    }
-
-                    _mcpClientTasks.Clear();
-                }
+                _lruCache.Dispose();
             }
 
             base.Dispose(disposing);
@@ -185,15 +173,10 @@ public static class McpChatClientBuilderExtensions
         {
             // Note: We don't pass cancellationToken to the factory because the cached task should not be tied to any single caller's cancellation token.
             // Instead, callers can cancel waiting for the task, but the connection attempt itself will complete independently.
-#if NET
-            // Avoid closure allocation.
-            Task<McpClient> task = _mcpClientTasks.GetOrAdd(key, 
-                static (_, state) => state.self.CreateMcpClientCoreAsync(state.serverAddress, state.serverName, state.authorizationToken, CancellationToken.None), 
+            Task<McpClient> task = _lruCache.GetOrAdd(
+                key,
+                static (_, state) => state.self.CreateMcpClientCoreAsync(state.serverAddress, state.serverName, state.authorizationToken, CancellationToken.None),
                 (self: this, serverAddress, serverName, authorizationToken));
-#else
-            Task<McpClient> task = _mcpClientTasks.GetOrAdd(key, 
-                _ => CreateMcpClientCoreAsync(serverAddress, serverName, authorizationToken, CancellationToken.None));
-#endif
 
             try
             {
@@ -201,8 +184,8 @@ public static class McpChatClientBuilderExtensions
             }
             catch
             {
-                // Remove the failed task from cache so subsequent requests can retry.
-                _mcpClientTasks.TryRemove(key, out _);
+                bool result = _lruCache.TryRemove(key, out var removedTask);
+                Debug.Assert(result && removedTask!.Status != TaskStatus.RanToCompletion);
                 throw;
             }
         }
