@@ -1,11 +1,10 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using ModelContextProtocol.AspNetCore.Tests.Utils;
-using ModelContextProtocol.Tests.Utils;
 using ModelContextProtocol.Protocol;
 using Moq;
 #pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
@@ -18,7 +17,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
     }
 
-    private async Task<WebApplication> StartServerAsync(Action<HttpServerTransportOptions>? configureHttpTransportOptions = null)
+    private async Task<WebApplication> StartServerAsync(Action<WebApplication>? configureApp = null)
     {
         IMcpServerBuilder builder = Builder.Services.AddMcpServer(options =>
         {
@@ -134,9 +133,10 @@ public class UseMcpClientTests : KestrelInMemoryTest
                 }
             };
         })
-        .WithHttpTransport(configureHttpTransportOptions);
+        .WithHttpTransport();
 
         var app = Builder.Build();
+        configureApp?.Invoke(app);
         app.MapMcp();
         await app.StartAsync(TestContext.Current.CancellationToken);
         return app;
@@ -251,21 +251,46 @@ public class UseMcpClientTests : KestrelInMemoryTest
     public async Task UseMcpClient_AuthorizationTokenHeaderFlowsCorrectly(bool streaming)
     {
         // Arrange
-        await using var _ = await StartServerAsync(configureHttpTransportOptions: options =>
-        {
-            options.ConfigureSessionOptions = (httpContext, serverOptions, cancellationToken) =>
-            {
-                if (httpContext.Request.Headers.TryGetValue("Authorization", out var authHeader))
-                {
-                    // Log the Authorization header for verification
-                    var logger = httpContext.RequestServices.GetRequiredService<ILogger<UseMcpClientTests>>();
-                    logger.LogInformation("Authorization header: {Authorization}", authHeader.ToString());
-                }
-                return Task.CompletedTask;
-            };
-        });
-        
         const string testToken = "test-bearer-token-12345";
+        bool authReceivedForInitialize = false;
+        bool authReceivedForNotificationsInitialized = false;
+        bool authReceivedForToolsList = false;
+        
+        await using var _ = await StartServerAsync(
+            configureApp: app =>
+            {
+                app.Use(async (context, next) =>
+                {
+                    if (context.Request.Method == "POST" &&
+                        context.Request.Headers.TryGetValue("Authorization", out var authHeader))
+                    {
+                        Assert.Equal($"Bearer {testToken}", authHeader.ToString());
+
+                        context.Request.EnableBuffering();
+                        JsonRpcRequest? rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                            context.Request.Body, 
+                            McpJsonUtilities.DefaultOptions, 
+                            context.RequestAborted);
+                        context.Request.Body.Position = 0;
+                        Assert.NotNull(rpcRequest);
+                        
+                        switch (rpcRequest.Method)
+                        {
+                            case "initialize":
+                                authReceivedForInitialize = true;
+                                break;
+                            case "notifications/initialized":
+                                authReceivedForNotificationsInitialized = true;
+                                break;
+                            case "tools/list":
+                                authReceivedForToolsList = true;
+                                break;
+                        }
+                    }
+                    await next();
+                });
+            });
+        
         using IChatClient sut = CreateTestChatClient(out var callbackState);
         var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
         {
@@ -280,6 +305,9 @@ public class UseMcpClientTests : KestrelInMemoryTest
         await GetResponseAsync(sut, options, streaming);
 
         // Assert
+        Assert.True(authReceivedForInitialize, "Authorization header was not captured in initial request");
+        Assert.True(authReceivedForNotificationsInitialized, "Authorization header was not captured in notifications/initialized request");
+        Assert.True(authReceivedForToolsList, "Authorization header was not captured in tools/list request");
         Assert.NotNull(callbackState.CapturedOptions);
         Assert.NotNull(callbackState.CapturedOptions.Tools);
         var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
@@ -287,8 +315,6 @@ public class UseMcpClientTests : KestrelInMemoryTest
         Assert.Contains("echo", toolNames);
         Assert.Contains("echoSessionId", toolNames);
         Assert.Contains("sampleLLM", toolNames);
-        // We set TestSseServer to log IHeaderDictionary as json.
-        Assert.Contains(MockLoggerProvider.LogMessages, log => log.Message.Contains(@"""Authorization"":[""Bearer test-bearer-token-12345""]"));
     }
 
     public static IEnumerable<object?[]> UseMcpClient_ApprovalsWorkCorrectly_TestData()
