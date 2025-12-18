@@ -13,7 +13,8 @@ using Moq;
 namespace ModelContextProtocol.AspNetCore.Tests;
 
 public class UseMcpClientTests : KestrelInMemoryTest
-{    public UseMcpClientTests(ITestOutputHelper testOutputHelper)
+{    
+    public UseMcpClientTests(ITestOutputHelper testOutputHelper)
         : base(testOutputHelper)
     {
     }
@@ -143,50 +144,113 @@ public class UseMcpClientTests : KestrelInMemoryTest
         return app;
     }
 
-    private sealed class CallbackState
+    /// <summary>
+    /// Captures the arguments received by the leaf mock IChatClient.
+    /// </summary>
+    private sealed class LeafClientState
     {
         public ChatOptions? CapturedOptions { get; set; }
+        public List<IEnumerable<ChatMessage>> CapturedMessages { get; set; } = [];
+        public int CallCount { get; set; }
+        public void Clear()
+        {
+            CapturedOptions = null;
+            CapturedMessages.Clear();
+            CallCount = 0;
+        }
     }
 
-    private IChatClient CreateTestChatClient(out CallbackState callbackState)
+    private IChatClient CreateTestChatClient(out LeafClientState leafClientState)
     {
-        var state = new CallbackState();
+        var state = new LeafClientState();
 
         var mockInnerClient = new Mock<IChatClient>();
         mockInnerClient
-            .Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>(
-                (msgs, opts, ct) => state.CapturedOptions = opts)
-            .ReturnsAsync(new ChatResponse([new ChatMessage(ChatRole.Assistant, "Dummy response")]));
+            .Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(), 
+                It.IsAny<ChatOptions>(), 
+                It.IsAny<CancellationToken>()))
+            .Returns((IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken ct) => 
+                GetStreamingResponseAsync(messages, options, ct).ToChatResponseAsync(ct));
 
         mockInnerClient
-            .Setup(c => c.GetStreamingResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>(
-                (msgs, opts, ct) => state.CapturedOptions = opts)
-            .Returns(GetStreamingResponseAsync());
+            .Setup(c => c.GetStreamingResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(), 
+                It.IsAny<ChatOptions>(), 
+                It.IsAny<CancellationToken>()))
+            .Returns(GetStreamingResponseAsync);
 
-        callbackState = state;
+        leafClientState = state;
         return mockInnerClient.Object.AsBuilder()
             .UseMcpClient(HttpClient, LoggerFactory)
+            // Placement is important, must be after UseMcpClient, otherwise; UseFunctionInvocation won't see the MCP tools.
+            .UseFunctionInvocation() 
             .Build();
 
-        static async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+        async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, 
+            ChatOptions? options, 
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            yield return new ChatResponseUpdate(ChatRole.Assistant, "Dummy response");
+            state.CapturedOptions = options;
+            state.CapturedMessages.Add(messages);
+
+            // First call: request to invoke the echo tool
+            if (state.CallCount++ == 0 && options?.Tools is { Count: > 0 } tools)
+            {
+                Assert.Contains(tools, t => t.Name == "echo");
+                yield return new ChatResponseUpdate(ChatRole.Assistant,
+                [
+                    new FunctionCallContent("call_123", "echo", new Dictionary<string, object?> { ["message"] = "test message" })
+                ]);
+            }
+            else
+            {
+                // Subsequent calls: return final response
+                yield return new ChatResponseUpdate(ChatRole.Assistant, "Final response");
+            }
         }
     }
 
-    private async Task GetResponseAsync(IChatClient client, ChatOptions options, bool streaming)
+    private static void AssertLeafClientMessagesWithInvocation(List<IEnumerable<ChatMessage>> capturedMessages)
     {
-        if (streaming)
-        {
-            await foreach (var _ in client.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken))
-            { }
-        }
-        else
-        {
-            _ = await client.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
-        }
+        Assert.Equal(2, capturedMessages.Count);
+        var firstCall = capturedMessages[0];
+        var msg = Assert.Single(firstCall);
+        Assert.Equal(ChatRole.User, msg.Role);
+        Assert.Equal("Test message", msg.Text);
+
+        var secondCall = capturedMessages[1].ToList();
+        Assert.Equal(3, secondCall.Count);
+        Assert.Equal(ChatRole.User, secondCall[0].Role);
+        Assert.Equal("Test message", secondCall[0].Text);
+
+        Assert.Equal(ChatRole.Assistant, secondCall[1].Role);
+        var functionCall = Assert.IsType<FunctionCallContent>(Assert.Single(secondCall[1].Contents));
+        Assert.Equal("call_123", functionCall.CallId);
+        Assert.Equal("echo", functionCall.Name);
+
+        Assert.Equal(ChatRole.Tool, secondCall[2].Role);
+        var functionResult = Assert.IsType<FunctionResultContent>(Assert.Single(secondCall[2].Contents));
+        Assert.Equal("call_123", functionResult.CallId);
+        Assert.Contains("Echo: test message", functionResult.Result?.ToString());
+    }
+
+    private static void AssertResponseWithInvocation(ChatResponse response)
+    {
+        Assert.NotNull(response);
+        Assert.Equal(3, response.Messages.Count);
+        
+        Assert.Equal(ChatRole.Assistant, response.Messages[0].Role);
+        Assert.Single(response.Messages[0].Contents);
+        Assert.IsType<FunctionCallContent>(response.Messages[0].Contents[0]);
+        
+        Assert.Equal(ChatRole.Tool, response.Messages[1].Role);
+        Assert.Single(response.Messages[1].Contents);
+        Assert.IsType<FunctionResultContent>(response.Messages[1].Contents[0]);
+        
+        Assert.Equal(ChatRole.Assistant, response.Messages[2].Role);
+        Assert.Equal("Final response", response.Messages[2].Text);
     }
 
     [Theory]
@@ -198,19 +262,24 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
         var mcpTool = useUrl ? 
             new HostedMcpServerTool("serverName", HttpClient.BaseAddress!) : 
             new HostedMcpServerTool("serverName", HttpClient.BaseAddress!.ToString());
+        mcpTool.ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire;
         var options = new ChatOptions { Tools = [mcpTool] };
 
         // Act
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) : 
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
         Assert.Equal(3, toolNames.Count);
         Assert.Contains("echo", toolNames);
         Assert.Contains("echoSessionId", toolNames);
@@ -224,21 +293,28 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
         var regularTool = AIFunctionFactory.Create(() => "regular tool result", "regularTool");
-        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!.ToString());
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!.ToString())
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
         var options = new ChatOptions
         {
             Tools = [regularTool, mcpTool]
         };
 
         // Act
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) : 
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
         Assert.Equal(4, toolNames.Count);
         Assert.Contains("regularTool", toolNames);
         Assert.Contains("echo", toolNames);
@@ -292,10 +368,11 @@ public class UseMcpClientTests : KestrelInMemoryTest
                 });
             });
         
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
         var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
         {
-            AuthorizationToken = testToken
+            AuthorizationToken = testToken,
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
         };
         var options = new ChatOptions
         {
@@ -303,22 +380,26 @@ public class UseMcpClientTests : KestrelInMemoryTest
         };
 
         // Act
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) : 
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
         Assert.True(authReceivedForInitialize, "Authorization header was not captured in initial request");
         Assert.True(authReceivedForNotificationsInitialized, "Authorization header was not captured in notifications/initialized request");
         Assert.True(authReceivedForToolsList, "Authorization header was not captured in tools/list request");
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
         Assert.Equal(3, toolNames.Count);
         Assert.Contains("echo", toolNames);
         Assert.Contains("echoSessionId", toolNames);
         Assert.Contains("sampleLLM", toolNames);
     }
 
-    public static IEnumerable<object?[]> UseMcpClient_ApprovalsWorkCorrectly_TestData()
+    public static IEnumerable<object?[]> UseMcpClient_ApprovalMode_TestData()
     {
         string[] allToolNames = ["echo", "echoSessionId", "sampleLLM"];
         foreach (var streaming in new[] { false, true })
@@ -336,8 +417,8 @@ public class UseMcpClientTests : KestrelInMemoryTest
     }
 
     [Theory]
-    [MemberData(nameof(UseMcpClient_ApprovalsWorkCorrectly_TestData))]
-    public async Task UseMcpClient_ApprovalsWorkCorrectly(
+    [MemberData(nameof(UseMcpClient_ApprovalMode_TestData))]
+    public async Task UseMcpClient_ApprovalMode(
         bool streaming, 
         HostedMcpServerToolApprovalMode? approvalMode,
         string[] expectedApprovalRequiredAIFunctions,
@@ -345,7 +426,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
         var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
         {
             ApprovalMode = approvalMode
@@ -353,37 +434,68 @@ public class UseMcpClientTests : KestrelInMemoryTest
         var options = new ChatOptions { Tools = [mcpTool] };
 
         // Act
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        Assert.Equal(3, callbackState.CapturedOptions.Tools.Count);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        Assert.Equal(3, leafClientState.CapturedOptions.Tools.Count);
 
-        var toolsRequiringApproval = callbackState.CapturedOptions.Tools
+        var toolsRequiringApproval = leafClientState.CapturedOptions.Tools
             .Where(t => t is ApprovalRequiredAIFunction).Select(t => t.Name);
-
-        var toolsNotRequiringApproval = callbackState.CapturedOptions.Tools
+        var toolsNotRequiringApproval = leafClientState.CapturedOptions.Tools
             .Where(t => t is not ApprovalRequiredAIFunction).Select(t => t.Name);
 
         Assert.Equivalent(expectedApprovalRequiredAIFunctions, toolsRequiringApproval);
         Assert.Equivalent(expectedNormalAIFunctions, toolsNotRequiringApproval);
     }
 
+    public static IEnumerable<object?[]> UseMcpClient_HandleFunctionApprovalRequest_TestData()
+    {
+        foreach (var streaming in new[] { false, true })
+        {
+            // Approval modes that will cause function approval requests
+            yield return new object?[] { streaming, null };
+            yield return new object?[] { streaming, HostedMcpServerToolApprovalMode.AlwaysRequire };
+            yield return new object?[] { streaming, HostedMcpServerToolApprovalMode.RequireSpecific(["echo"], null) };
+        }
+    }
+
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UseMcpClient_ThrowsInvalidOperationException_WhenServerAddressIsInvalid(bool streaming)
+    [MemberData(nameof(UseMcpClient_HandleFunctionApprovalRequest_TestData))]
+    public async Task UseMcpClient_HandleFunctionApprovalRequest(
+        bool streaming,
+        HostedMcpServerToolApprovalMode? approvalMode)
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
-        var mcpTool = new HostedMcpServerTool("serverNameConnector", "test-connector-123");
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = approvalMode
+        };
         var options = new ChatOptions { Tools = [mcpTool] };
 
-        // Act & Assert
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => GetResponseAsync(sut, options, streaming));
-        Assert.Contains("test-connector-123", exception.Message);
+        // Act
+        List<ChatMessage> chatHistory = [];
+        chatHistory.Add(new ChatMessage(ChatRole.User, "Test message"));
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync(chatHistory, options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync(chatHistory, options, TestContext.Current.CancellationToken);
+
+        chatHistory.AddRange(response.Messages);
+        var approvalRequest = Assert.Single(response.Messages.SelectMany(m => m.Contents).OfType<FunctionApprovalRequestContent>());
+        chatHistory.Add(new ChatMessage(ChatRole.User, [approvalRequest.CreateResponse(true)]));
+
+        response = streaming ?
+            await sut.GetStreamingResponseAsync(chatHistory, options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync(chatHistory, options, TestContext.Current.CancellationToken);
+
+        // Assert
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
     }
 
     [Theory]
@@ -397,22 +509,43 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
         var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
         {
-            AllowedTools = allowedTools
+            AllowedTools = allowedTools,
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
         };
         var options = new ChatOptions { Tools = [mcpTool] };
 
         // Act
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
         Assert.Equal(expectedTools.Length, toolNames.Count);
         Assert.Equivalent(expectedTools, toolNames);
+        
+        if (expectedTools.Contains("echo"))
+        {
+            AssertResponseWithInvocation(response);
+            AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        }
+        else
+        {
+            var responseMsg = Assert.Single(response.Messages);
+            Assert.Equal(ChatRole.Assistant, responseMsg.Role);
+            Assert.Equal("Final response", responseMsg.Text);
+
+            Assert.Single(leafClientState.CapturedMessages);
+            var firstCall = leafClientState.CapturedMessages[0];
+            var leafClientMessage = Assert.Single(firstCall);
+            Assert.Equal(ChatRole.User, leafClientMessage.Role);
+            Assert.Equal("Test message", leafClientMessage.Text);
+        }
     }
 
     [Theory]
@@ -422,33 +555,67 @@ public class UseMcpClientTests : KestrelInMemoryTest
     {
         // Arrange
         await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var callbackState);
-        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!);
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
         var options = new ChatOptions { Tools = [mcpTool] };
 
         // Act - First call
-        await GetResponseAsync(sut, options, streaming);
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
 
         // Assert - First call should succeed and produce tools
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var firstCallToolCount = callbackState.CapturedOptions.Tools.Count;
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var firstCallToolCount = leafClientState.CapturedOptions.Tools.Count;
         Assert.Equal(3, firstCallToolCount);
-
-        // Act - Second call with same server address (should use cached client)
-        await GetResponseAsync(sut, options, streaming);
-
-        // Assert - Second call should also succeed with same tools
-        Assert.NotNull(callbackState.CapturedOptions);
-        Assert.NotNull(callbackState.CapturedOptions.Tools);
-        var secondCallToolCount = callbackState.CapturedOptions.Tools.Count;
-        Assert.Equal(3, secondCallToolCount);
-        Assert.Equal(firstCallToolCount, secondCallToolCount);
-
-        // Verify the tools are the same
-        var toolNames = callbackState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
         Assert.Contains("echo", toolNames);
         Assert.Contains("echoSessionId", toolNames);
         Assert.Contains("sampleLLM", toolNames);
+
+        // Arrange
+        leafClientState.Clear();
+
+        // Act - Second call with same server address (should use cached client)
+        var secondResponse = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert - Second call should also succeed with same tools
+        AssertResponseWithInvocation(secondResponse);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var secondCallToolCount = leafClientState.CapturedOptions.Tools.Count;
+        Assert.Equal(3, secondCallToolCount);
+        Assert.Equal(firstCallToolCount, secondCallToolCount);
+        toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.Contains("echo", toolNames);
+        Assert.Contains("echoSessionId", toolNames);
+        Assert.Contains("sampleLLM", toolNames);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_ThrowsInvalidOperationException_WhenServerAddressIsInvalid(bool streaming)
+    {
+        // Arrange
+        await using var _ = await StartServerAsync();
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverNameConnector", "test-connector-123");
+        var options = new ChatOptions { Tools = [mcpTool] };
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => streaming ? 
+            sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken));
+        Assert.Contains("test-connector-123", exception.Message);
     }
 }

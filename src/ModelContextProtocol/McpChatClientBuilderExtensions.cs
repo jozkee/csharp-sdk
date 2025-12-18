@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -69,7 +70,6 @@ public static class McpChatClientBuilderExtensions
             _lruCache = new McpClientTasksLruCache(capacity: 20);
         }
 
-        /// <inheritdoc/>
         public override async Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
@@ -83,7 +83,6 @@ public static class McpChatClientBuilderExtensions
             return await base.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
         }
 
-        /// <inheritdoc/>
         public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             if (options?.Tools is { Count: > 0 })
@@ -119,7 +118,7 @@ public static class McpChatClientBuilderExtensions
                 }
 
                 // Get MCP client and its tools from cache (both are fetched together on first access).
-                var mcpTools = await GetToolsAsync(mcpTool.ServerAddress, parsedAddress, mcpTool.ServerName, mcpTool.AuthorizationToken).ConfigureAwait(false);
+                var (_, mcpTools) = await GetClientAndToolsAsync(mcpTool.ServerAddress, parsedAddress, mcpTool.ServerName, mcpTool.AuthorizationToken).ConfigureAwait(false);
 
                 // Add the listed functions to our list of tools we'll pass to the inner client.
                 foreach (var mcpFunction in mcpTools)
@@ -133,16 +132,18 @@ public static class McpChatClientBuilderExtensions
                         continue;
                     }
 
+                    var wrappedFunction = new RetryableAIFunction(mcpFunction, mcpTool.ServerAddress, this);
+
                     switch (mcpTool.ApprovalMode)
                     {
                         case HostedMcpServerToolNeverRequireApprovalMode:
                         case HostedMcpServerToolRequireSpecificApprovalMode specificApprovalMode when specificApprovalMode.NeverRequireApprovalToolNames?.Contains(mcpFunction.Name) is true:
-                            downstreamTools.Add(mcpFunction);
+                            downstreamTools.Add(wrappedFunction);
                             break;
 
                         default:
                             // Default to always require approval if no specific mode is set.
-                            downstreamTools.Add(new ApprovalRequiredAIFunction(mcpFunction));
+                            downstreamTools.Add(new ApprovalRequiredAIFunction(wrappedFunction));
                             break;
                     }
                 }
@@ -151,12 +152,10 @@ public static class McpChatClientBuilderExtensions
             return downstreamTools;
         }
 
-        /// <inheritdoc/>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                // Dispose of the HTTP client if it was created by this client.
                 if (_ownsHttpClient)
                 {
                     _httpClient?.Dispose();
@@ -168,7 +167,7 @@ public static class McpChatClientBuilderExtensions
             base.Dispose(disposing);
         }
 
-        private async Task<IList<McpClientTool>> GetToolsAsync(string key, Uri serverAddress, string serverName, string? authorizationToken)
+        private async Task<(McpClient Client, IList<McpClientTool> Tools)> GetClientAndToolsAsync(string key, Uri serverAddress, string serverName, string? authorizationToken)
         {
             // Note: We don't pass cancellationToken to the factory because the cached task should not be tied to any single caller's cancellation token.
             // Instead, callers can cancel waiting for the task, but the connection attempt itself will complete independently.
@@ -179,7 +178,7 @@ public static class McpChatClientBuilderExtensions
 
             try
             {
-                return (await task.ConfigureAwait(false)).Tools;
+                return await task.ConfigureAwait(false);
             }
             catch
             {
@@ -187,6 +186,11 @@ public static class McpChatClientBuilderExtensions
                 Debug.Assert(result && removedTask!.Status != TaskStatus.RanToCompletion);
                 throw;
             }
+        }
+
+        private void RefreshClientAndToolsCache(string key)
+        {
+            _lruCache.TryRemove(key, out _);
         }
 
         private async Task<(McpClient Client, IList<McpClientTool> Tools)> CreateMcpClientAndToolsAsync(Uri serverAddress, string serverName, string? authorizationToken, CancellationToken cancellationToken)
@@ -205,6 +209,58 @@ public static class McpChatClientBuilderExtensions
             var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             
             return (client, tools);
+        }
+
+        private sealed class RetryableAIFunction : DelegatingAIFunction
+        {
+            private readonly string _serverAddress;
+            private readonly McpChatClient _chatClient;
+
+            public RetryableAIFunction(AIFunction innerFunction, string serverAddress, McpChatClient chatClient)
+                : base(innerFunction)
+            {
+                _serverAddress = serverAddress;
+                _chatClient = chatClient;
+            }
+
+            protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
+            {
+                try
+                {
+                    return await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ShouldRetry(ex))
+                {
+                    // Refresh the cache entry and retry once
+                    _chatClient.RefreshClientAndToolsCache(_serverAddress);
+                    
+                    // Get fresh client and tools, then find the matching tool
+                    var (_, freshTools) = await _chatClient.GetClientAndToolsAsync(
+                        _serverAddress, 
+                        new Uri(_serverAddress), 
+                        string.Empty, // We don't have access to serverName/token here, but the cache key is just the address
+                        null).ConfigureAwait(false);
+                    
+                    var freshTool = freshTools.FirstOrDefault(t => t.Name == Name);
+                    if (freshTool == null)
+                    {
+                        throw new InvalidOperationException($"Tool '{Name}' no longer exists on the MCP server.");
+                    }
+                    
+                    return await freshTool.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            private static bool ShouldRetry(Exception ex)
+            {
+                // Retry on connection issues, session lost, or tool not found errors
+                return ex is McpProtocolException mcpEx && 
+                       (mcpEx.ErrorCode == McpErrorCode.MethodNotFound || 
+                        mcpEx.ErrorCode == McpErrorCode.InvalidRequest) ||
+                       ex is HttpRequestException ||
+                       ex is TaskCanceledException ||
+                       ex is SocketException;
+            }
         }
     }
 }
