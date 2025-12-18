@@ -118,12 +118,11 @@ public static class McpChatClientBuilderExtensions
                        $"Invalid http(s) address: '{mcpTool.ServerAddress}'. MCP server address must be an absolute https(s) URL.");
                 }
 
-                // List all MCP functions from the specified MCP server.
-                var mcpClient = await CreateMcpClientAsync(mcpTool.ServerAddress, parsedAddress, mcpTool.ServerName, mcpTool.AuthorizationToken).ConfigureAwait(false);
-                var mcpFunctions = await mcpClient.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                // Get MCP client and its tools from cache (both are fetched together on first access).
+                var mcpTools = await GetToolsAsync(mcpTool.ServerAddress, parsedAddress, mcpTool.ServerName, mcpTool.AuthorizationToken).ConfigureAwait(false);
 
                 // Add the listed functions to our list of tools we'll pass to the inner client.
-                foreach (var mcpFunction in mcpFunctions)
+                foreach (var mcpFunction in mcpTools)
                 {
                     if (mcpTool.AllowedTools is not null && !mcpTool.AllowedTools.Contains(mcpFunction.Name))
                     {
@@ -169,18 +168,18 @@ public static class McpChatClientBuilderExtensions
             base.Dispose(disposing);
         }
 
-        private async Task<McpClient> CreateMcpClientAsync(string key, Uri serverAddress, string serverName, string? authorizationToken)
+        private async Task<IList<McpClientTool>> GetToolsAsync(string key, Uri serverAddress, string serverName, string? authorizationToken)
         {
             // Note: We don't pass cancellationToken to the factory because the cached task should not be tied to any single caller's cancellation token.
             // Instead, callers can cancel waiting for the task, but the connection attempt itself will complete independently.
-            Task<McpClient> task = _lruCache.GetOrAdd(
+            Task<(McpClient, IList<McpClientTool> Tools)> task = _lruCache.GetOrAdd(
                 key,
-                static (_, state) => state.self.CreateMcpClientCoreAsync(state.serverAddress, state.serverName, state.authorizationToken, CancellationToken.None),
+                static (_, state) => state.self.CreateMcpClientAndToolsAsync(state.serverAddress, state.serverName, state.authorizationToken, CancellationToken.None),
                 (self: this, serverAddress, serverName, authorizationToken));
 
             try
             {
-                return await task.ConfigureAwait(false);
+                return (await task.ConfigureAwait(false)).Tools;
             }
             catch
             {
@@ -190,7 +189,7 @@ public static class McpChatClientBuilderExtensions
             }
         }
 
-        private Task<McpClient> CreateMcpClientCoreAsync(Uri serverAddress, string serverName, string? authorizationToken, CancellationToken cancellationToken)
+        private async Task<(McpClient Client, IList<McpClientTool> Tools)> CreateMcpClientAndToolsAsync(Uri serverAddress, string serverName, string? authorizationToken, CancellationToken cancellationToken)
         {
             var transport = new HttpClientTransport(new HttpClientTransportOptions
             {
@@ -202,7 +201,10 @@ public static class McpChatClientBuilderExtensions
                     : null,
             }, _httpClient, _loggerFactory);
 
-            return McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
+            var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            
+            return (client, tools);
         }
     }
 }

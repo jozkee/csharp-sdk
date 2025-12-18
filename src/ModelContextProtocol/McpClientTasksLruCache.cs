@@ -4,11 +4,11 @@ using System.Diagnostics.CodeAnalysis;
 namespace ModelContextProtocol.Client;
 
 /// <summary>
-/// A thread-safe Least Recently Used (LRU) cache for MCP client tasks.
+/// A thread-safe Least Recently Used (LRU) cache for MCP client and tools.
 /// </summary>
 internal sealed class McpClientTasksLruCache : IDisposable
 {
-    private readonly Dictionary<string, (LinkedListNode<string> Node, Task<McpClient> Task)> _cache;
+    private readonly Dictionary<string, (LinkedListNode<string> Node, Task<(McpClient Client, IList<McpClientTool> Tools)> Task)> _cache;
     private readonly LinkedList<string> _lruList;
     private readonly object _lock = new();
     private readonly int _capacity;
@@ -17,11 +17,11 @@ internal sealed class McpClientTasksLruCache : IDisposable
     {
         Debug.Assert(capacity > 0);
         _capacity = capacity;
-        _cache = new Dictionary<string, (LinkedListNode<string>, Task<McpClient>)>(capacity);
+        _cache = new Dictionary<string, (LinkedListNode<string>, Task<(McpClient, IList<McpClientTool>)>)>(capacity);
         _lruList = [];
     }
 
-    public Task<McpClient> GetOrAdd<TState>(string key, Func<string, TState, Task<McpClient>> valueFactory, TState state)
+    public Task<(McpClient Client, IList<McpClientTool> Tools)> GetOrAdd<TState>(string key, Func<string, TState, Task<(McpClient, IList<McpClientTool>)>> valueFactory, TState state)
     {
         lock (_lock)
         {
@@ -41,13 +41,13 @@ internal sealed class McpClientTasksLruCache : IDisposable
             {
                 string oldestKey = _lruList.First!.Value;
                 _lruList.RemoveFirst();
-                (_, Task<McpClient> task) = _cache[oldestKey];
+                (_, Task<(McpClient Client, IList<McpClientTool> Tools)> task) = _cache[oldestKey];
                 _cache.Remove(oldestKey);
 
                 // Dispose evicted MCP client
                 if (task.Status == TaskStatus.RanToCompletion)
                 {
-                    _ = task.Result.DisposeAsync();
+                    _ = task.Result.Client.DisposeAsync();
                 }
             }
 
@@ -55,7 +55,7 @@ internal sealed class McpClientTasksLruCache : IDisposable
         }
     }
 
-    public bool TryRemove(string key, [MaybeNullWhen(false)] out Task<McpClient>? task)
+    public bool TryRemove(string key, [MaybeNullWhen(false)] out Task<(McpClient Client, IList<McpClientTool> Tools)>? task)
     {
         lock (_lock)
         {
@@ -76,11 +76,11 @@ internal sealed class McpClientTasksLruCache : IDisposable
     {
         lock (_lock)
         {
-            foreach ((_, Task<McpClient> task) in _cache.Values)
+            foreach ((_, Task<(McpClient Client, IList<McpClientTool> Tools)> task) in _cache.Values)
             {
                 if (task.Status == TaskStatus.RanToCompletion)
                 {
-                    _ = task.Result.DisposeAsync();
+                    _ = task.Result.Client.DisposeAsync();
                 }
             }
         }
