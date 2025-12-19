@@ -211,7 +211,7 @@ public static class McpChatClientBuilderExtensions
             return (client, tools);
         }
 
-        private sealed class RetryableAIFunction : DelegatingAIFunction
+        private sealed class RetryableAIFunction : DelegatingAIFunction // TODO: think in a better name AIFunctionThatRetriesOnMcpClientDisconnection, this is not an actor though.
         {
             private readonly string _serverAddress;
             private readonly McpChatClient _chatClient;
@@ -236,7 +236,7 @@ public static class McpChatClientBuilderExtensions
                     
                     // Get fresh client and tools, then find the matching tool
                     var (_, freshTools) = await _chatClient.GetClientAndToolsAsync(
-                        _serverAddress, 
+                        _serverAddress,
                         new Uri(_serverAddress), 
                         string.Empty, // We don't have access to serverName/token here, but the cache key is just the address
                         null).ConfigureAwait(false);

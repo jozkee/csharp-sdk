@@ -13,7 +13,7 @@ using Moq;
 namespace ModelContextProtocol.AspNetCore.Tests;
 
 public class UseMcpClientTests : KestrelInMemoryTest
-{    
+{
     public UseMcpClientTests(ITestOutputHelper testOutputHelper)
         : base(testOutputHelper)
     {
@@ -30,7 +30,6 @@ public class UseMcpClientTests : KestrelInMemoryTest
                 Prompts = new(),
             };
             options.ServerInstructions = "This is a test server with only stub functionality";
-
             options.Handlers = new()
             {
                 ListToolsHandler = async (request, cancellationToken) =>
@@ -147,7 +146,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
     /// <summary>
     /// Captures the arguments received by the leaf mock IChatClient.
     /// </summary>
-    private sealed class LeafClientState
+    private sealed class LeafChatClientState
     {
         public ChatOptions? CapturedOptions { get; set; }
         public List<IEnumerable<ChatMessage>> CapturedMessages { get; set; } = [];
@@ -160,9 +159,9 @@ public class UseMcpClientTests : KestrelInMemoryTest
         }
     }
 
-    private IChatClient CreateTestChatClient(out LeafClientState leafClientState)
+    private IChatClient CreateTestChatClient(out LeafChatClientState leafClientState)
     {
-        var state = new LeafClientState();
+        var state = new LeafChatClientState();
 
         var mockInnerClient = new Mock<IChatClient>();
         mockInnerClient
@@ -322,83 +321,6 @@ public class UseMcpClientTests : KestrelInMemoryTest
         Assert.Contains("sampleLLM", toolNames);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UseMcpClient_AuthorizationTokenHeaderFlowsCorrectly(bool streaming)
-    {
-        // Arrange
-        const string testToken = "test-bearer-token-12345";
-        bool authReceivedForInitialize = false;
-        bool authReceivedForNotificationsInitialized = false;
-        bool authReceivedForToolsList = false;
-        
-        await using var _ = await StartServerAsync(
-            configureApp: app =>
-            {
-                app.Use(async (context, next) =>
-                {
-                    if (context.Request.Method == "POST" &&
-                        context.Request.Headers.TryGetValue("Authorization", out var authHeader))
-                    {
-                        Assert.Equal($"Bearer {testToken}", authHeader.ToString());
-
-                        context.Request.EnableBuffering();
-                        JsonRpcRequest? rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
-                            context.Request.Body, 
-                            McpJsonUtilities.DefaultOptions, 
-                            context.RequestAborted);
-                        context.Request.Body.Position = 0;
-                        Assert.NotNull(rpcRequest);
-                        
-                        switch (rpcRequest.Method)
-                        {
-                            case "initialize":
-                                authReceivedForInitialize = true;
-                                break;
-                            case "notifications/initialized":
-                                authReceivedForNotificationsInitialized = true;
-                                break;
-                            case "tools/list":
-                                authReceivedForToolsList = true;
-                                break;
-                        }
-                    }
-                    await next();
-                });
-            });
-        
-        using IChatClient sut = CreateTestChatClient(out var leafClientState);
-        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
-        {
-            AuthorizationToken = testToken,
-            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
-        };
-        var options = new ChatOptions
-        {
-            Tools = [mcpTool]
-        };
-
-        // Act
-        var response = streaming ? 
-            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) : 
-            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
-
-        // Assert
-        AssertResponseWithInvocation(response);
-        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
-        Assert.True(authReceivedForInitialize, "Authorization header was not captured in initial request");
-        Assert.True(authReceivedForNotificationsInitialized, "Authorization header was not captured in notifications/initialized request");
-        Assert.True(authReceivedForToolsList, "Authorization header was not captured in tools/list request");
-        Assert.NotNull(leafClientState.CapturedOptions);
-        Assert.NotNull(leafClientState.CapturedOptions.Tools);
-        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
-        Assert.Equal(3, toolNames.Count);
-        Assert.Contains("echo", toolNames);
-        Assert.Contains("echoSessionId", toolNames);
-        Assert.Contains("sampleLLM", toolNames);
-    }
-
     public static IEnumerable<object?[]> UseMcpClient_ApprovalMode_TestData()
     {
         string[] allToolNames = ["echo", "echoSessionId", "sampleLLM"];
@@ -418,11 +340,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
 
     [Theory]
     [MemberData(nameof(UseMcpClient_ApprovalMode_TestData))]
-    public async Task UseMcpClient_ApprovalMode(
-        bool streaming, 
-        HostedMcpServerToolApprovalMode? approvalMode,
-        string[] expectedApprovalRequiredAIFunctions,
-        string[] expectedNormalAIFunctions)
+    public async Task UseMcpClient_ApprovalMode(bool streaming, HostedMcpServerToolApprovalMode? approvalMode, string[] expectedApprovalRequiredAIFunctions, string[] expectedNormalAIFunctions)
     {
         // Arrange
         await using var _ = await StartServerAsync();
@@ -465,9 +383,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
 
     [Theory]
     [MemberData(nameof(UseMcpClient_HandleFunctionApprovalRequest_TestData))]
-    public async Task UseMcpClient_HandleFunctionApprovalRequest(
-        bool streaming,
-        HostedMcpServerToolApprovalMode? approvalMode)
+    public async Task UseMcpClient_HandleFunctionApprovalRequest(bool streaming, HostedMcpServerToolApprovalMode? approvalMode)
     {
         // Arrange
         await using var _ = await StartServerAsync();
@@ -546,6 +462,225 @@ public class UseMcpClientTests : KestrelInMemoryTest
             Assert.Equal(ChatRole.User, leafClientMessage.Role);
             Assert.Equal("Test message", leafClientMessage.Text);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_AuthorizationTokenHeaderFlowsCorrectly(bool streaming)
+    {
+        // Arrange
+        const string testToken = "test-bearer-token-12345";
+        bool authReceivedForInitialize = false;
+        bool authReceivedForNotificationsInitialized = false;
+        bool authReceivedForToolsList = false;
+        
+        await using var _ = await StartServerAsync(
+            configureApp: app =>
+            {
+                app.Use(async (context, next) =>
+                {
+                    if (context.Request.Method == "POST" &&
+                        context.Request.Headers.TryGetValue("Authorization", out var authHeader))
+                    {
+                        Assert.Equal($"Bearer {testToken}", authHeader.ToString());
+
+                        context.Request.EnableBuffering();
+                        JsonRpcRequest? rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                            context.Request.Body, 
+                            McpJsonUtilities.DefaultOptions, 
+                            context.RequestAborted);
+                        context.Request.Body.Position = 0;
+                        Assert.NotNull(rpcRequest);
+                        
+                        switch (rpcRequest.Method)
+                        {
+                            case "initialize":
+                                authReceivedForInitialize = true;
+                                break;
+                            case "notifications/initialized":
+                                authReceivedForNotificationsInitialized = true;
+                                break;
+                            case "tools/list":
+                                authReceivedForToolsList = true;
+                                break;
+                        }
+                    }
+                    await next();
+                });
+            });
+        
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            AuthorizationToken = testToken,
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
+        var options = new ChatOptions
+        {
+            Tools = [mcpTool]
+        };
+
+        // Act
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) : 
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.True(authReceivedForInitialize, "Authorization header was not captured in initial request");
+        Assert.True(authReceivedForNotificationsInitialized, "Authorization header was not captured in notifications/initialized request");
+        Assert.True(authReceivedForToolsList, "Authorization header was not captured in tools/list request");
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.Equal(3, toolNames.Count);
+        Assert.Contains("echo", toolNames);
+        Assert.Contains("echoSessionId", toolNames);
+        Assert.Contains("sampleLLM", toolNames);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_RetriesOnMethodNotFound(bool streaming)
+    {
+        // Arrange
+        int toolCallCount = 0;
+        await using var _ = await StartServerAsync(
+            configureApp: app =>
+            {
+                app.Use(async (context, next) =>
+                {
+                    if (context.Request.Method == "POST")
+                    {
+                        context.Request.EnableBuffering();
+                        var rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                            context.Request.Body, 
+                            McpJsonUtilities.DefaultOptions);
+                        context.Request.Body.Position = 0;
+                        
+                        if (rpcRequest?.Method == "tools/call")
+                        {
+                            toolCallCount++;
+                            if (toolCallCount == 1)
+                            {
+                                // First call returns MethodNotFound error
+                                var error = new JsonRpcError
+                                {
+                                    Id = rpcRequest.Id,
+                                    Error = new JsonRpcErrorDetail
+                                    {
+                                        Code = (int)McpErrorCode.MethodNotFound,
+                                        Message = "Method not found"
+                                    }
+                                };
+                                context.Response.ContentType = "application/json";
+                                await JsonSerializer.SerializeAsync(context.Response.Body, error, McpJsonUtilities.DefaultOptions);
+                                return;
+                            }
+                        }
+                    }
+                    await next();
+                });
+            });
+        
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
+        var options = new ChatOptions { Tools = [mcpTool] };
+    
+        // Act
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+    
+        // Assert
+        Assert.Equal(2, toolCallCount);
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_RetriesWhenSessionRevokedByServer(bool streaming)
+    {
+        // Arrange
+        HashSet<string> revokedSessionIds = [];
+        int toolCallCount = 0;
+        
+        await using var app = await StartServerAsync(
+            configureApp: app =>
+            {
+                app.Use(async (context, next) =>
+                {
+                    if (context.Request.Method == "POST")
+                    {
+                        context.Request.EnableBuffering();
+                        var rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                            context.Request.Body, 
+                            McpJsonUtilities.DefaultOptions);
+                        context.Request.Body.Position = 0;
+                        
+                        // Check if this session has been revoked
+                        if (context.Request.Headers.TryGetValue("Mcp-Session-Id", out var sessionIdHeader))
+                        {
+                            var sessionId = sessionIdHeader.ToString();
+                            
+                            if (rpcRequest?.Method == "tools/call")
+                            {
+                                toolCallCount++;
+                                
+                                // On first tool call, mark this session as revoked
+                                if (toolCallCount == 1)
+                                {
+                                    revokedSessionIds.Add(sessionId);
+                                }
+                                
+                                // If session is revoked, return error
+                                if (revokedSessionIds.Contains(sessionId))
+                                {
+                                    var error = new JsonRpcError
+                                    {
+                                        Id = rpcRequest.Id,
+                                        Error = new JsonRpcErrorDetail
+                                        {
+                                            Code = (int)McpErrorCode.InvalidRequest,
+                                            Message = "Session has been revoked or expired"
+                                        }
+                                    };
+                                    context.Response.ContentType = "application/json";
+                                    await JsonSerializer.SerializeAsync(context.Response.Body, error, McpJsonUtilities.DefaultOptions);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    await next();
+                });
+            });
+        
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
+        var options = new ChatOptions { Tools = [mcpTool] };
+    
+        // Act
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+    
+        // Assert - Should have retried with a new session and succeeded
+        Assert.Equal(2, toolCallCount); // First attempt + retry
+        Assert.Single(revokedSessionIds); // One session was revoked
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
     }
 
     [Theory]
