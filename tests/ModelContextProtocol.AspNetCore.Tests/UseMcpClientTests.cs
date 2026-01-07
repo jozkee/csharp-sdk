@@ -474,7 +474,8 @@ public class UseMcpClientTests : KestrelInMemoryTest
         bool authReceivedForInitialize = false;
         bool authReceivedForNotificationsInitialized = false;
         bool authReceivedForToolsList = false;
-        
+        bool authReceivedForToolsCall = false;
+
         await using var _ = await StartServerAsync(
             configureApp: app =>
             {
@@ -504,6 +505,9 @@ public class UseMcpClientTests : KestrelInMemoryTest
                             case "tools/list":
                                 authReceivedForToolsList = true;
                                 break;
+                            case "tools/call":
+                                authReceivedForToolsCall = true;
+                                break;
                         }
                     }
                     await next();
@@ -532,6 +536,8 @@ public class UseMcpClientTests : KestrelInMemoryTest
         Assert.True(authReceivedForInitialize, "Authorization header was not captured in initial request");
         Assert.True(authReceivedForNotificationsInitialized, "Authorization header was not captured in notifications/initialized request");
         Assert.True(authReceivedForToolsList, "Authorization header was not captured in tools/list request");
+        Assert.True(authReceivedForToolsCall, "Authorization header was not captured in tools/call request");
+
         Assert.NotNull(leafClientState.CapturedOptions);
         Assert.NotNull(leafClientState.CapturedOptions.Tools);
         var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
@@ -544,11 +550,90 @@ public class UseMcpClientTests : KestrelInMemoryTest
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task UseMcpClient_RetriesOnMethodNotFound(bool streaming)
+    public async Task UseMcpClient_CachesClientForSameServerAddress(bool streaming)
     {
         // Arrange
-        int toolCallCount = 0;
-        await using var _ = await StartServerAsync(
+        int initializeCallCount = 0;
+        await using var _ = await StartServerAsync(configureApp: app =>
+        {
+            app.Use(async (context, next) =>
+            {
+                if (context.Request.Method == "POST")
+                {
+                    context.Request.EnableBuffering();
+                    var rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                        context.Request.Body,
+                        McpJsonUtilities.DefaultOptions,
+                        context.RequestAborted);
+                    context.Request.Body.Position = 0;
+
+                    if (rpcRequest?.Method == "initialize")
+                    {
+                        initializeCallCount++;
+                    }
+                }
+                await next();
+            });
+        });
+        
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
+        var options = new ChatOptions { Tools = [mcpTool] };
+
+        // Act
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var firstCallToolCount = leafClientState.CapturedOptions.Tools.Count;
+        Assert.Equal(3, firstCallToolCount);
+        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.Contains("echo", toolNames);
+        Assert.Contains("echoSessionId", toolNames);
+        Assert.Contains("sampleLLM", toolNames);
+        Assert.Equal(1, initializeCallCount);
+
+        // Arrange
+        leafClientState.Clear();
+
+        // Act
+        var secondResponse = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert
+        AssertResponseWithInvocation(secondResponse);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+        Assert.NotNull(leafClientState.CapturedOptions);
+        Assert.NotNull(leafClientState.CapturedOptions.Tools);
+        var secondCallToolCount = leafClientState.CapturedOptions.Tools.Count;
+        Assert.Equal(3, secondCallToolCount);
+        Assert.Equal(firstCallToolCount, secondCallToolCount);
+        toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
+        Assert.Contains("echo", toolNames);
+        Assert.Contains("echoSessionId", toolNames);
+        Assert.Contains("sampleLLM", toolNames);
+        Assert.True(initializeCallCount == 1, "Initialize should not be called more than once because the MCP client is cached.");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_RetriesWhenSessionRevokedByServer(bool streaming)
+    {
+        // Arrange
+        string? firstSessionId = null;
+        string? secondSessionId = null;
+        
+        await using var app = await StartServerAsync(
             configureApp: app =>
             {
                 app.Use(async (context, next) =>
@@ -561,24 +646,21 @@ public class UseMcpClientTests : KestrelInMemoryTest
                             McpJsonUtilities.DefaultOptions);
                         context.Request.Body.Position = 0;
                         
-                        if (rpcRequest?.Method == "tools/call")
+                        if (rpcRequest?.Method == "tools/call" && context.Request.Headers.TryGetValue("Mcp-Session-Id", out var sessionIdHeader))
                         {
-                            toolCallCount++;
-                            if (toolCallCount == 1)
+                            var sessionId = sessionIdHeader.ToString();
+                            
+                            if (firstSessionId == null)
                             {
-                                // First call returns MethodNotFound error
-                                var error = new JsonRpcError
-                                {
-                                    Id = rpcRequest.Id,
-                                    Error = new JsonRpcErrorDetail
-                                    {
-                                        Code = (int)McpErrorCode.MethodNotFound,
-                                        Message = "Method not found"
-                                    }
-                                };
-                                context.Response.ContentType = "application/json";
-                                await JsonSerializer.SerializeAsync(context.Response.Body, error, McpJsonUtilities.DefaultOptions);
+                                // First tool call - capture session and return 404 to revoke it
+                                firstSessionId = sessionId;
+                                context.Response.StatusCode = StatusCodes.Status404NotFound;
                                 return;
+                            }
+                            else
+                            {
+                                // Second tool call - capture session and let it succeed
+                                secondSessionId = sessionId;
                             }
                         }
                     }
@@ -599,141 +681,58 @@ public class UseMcpClientTests : KestrelInMemoryTest
             await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
     
         // Assert
+        Assert.NotNull(firstSessionId);
+        Assert.NotNull(secondSessionId);
+        Assert.NotEqual(firstSessionId, secondSessionId);
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_RetriesOnServerError(bool streaming)
+    {
+        int toolCallCount = 0;
+        await using var app = await StartServerAsync(configureApp: app =>
+        {
+            app.Use(async (context, next) =>
+            {
+                if (context.Request.Method == "POST")
+                {
+                    context.Request.EnableBuffering();
+                    var rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
+                        context.Request.Body,
+                        McpJsonUtilities.DefaultOptions,
+                        context.RequestAborted);
+                    context.Request.Body.Position = 0;
+
+                    if (rpcRequest?.Method == "tools/call" && ++toolCallCount == 1)
+                    {
+                        throw new Exception("Simulated server error.");
+                    }
+                }
+                await next();
+            });
+        });
+
+        using IChatClient sut = CreateTestChatClient(out var leafClientState);
+
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
+        };
+        var options = new ChatOptions { Tools = [mcpTool] };
+
+        // Act
+        var response = streaming ?
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert
         Assert.Equal(2, toolCallCount);
         AssertResponseWithInvocation(response);
         AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UseMcpClient_RetriesWhenSessionRevokedByServer(bool streaming)
-    {
-        // Arrange
-        HashSet<string> revokedSessionIds = [];
-        int toolCallCount = 0;
-        
-        await using var app = await StartServerAsync(
-            configureApp: app =>
-            {
-                app.Use(async (context, next) =>
-                {
-                    if (context.Request.Method == "POST")
-                    {
-                        context.Request.EnableBuffering();
-                        var rpcRequest = await JsonSerializer.DeserializeAsync<JsonRpcRequest>(
-                            context.Request.Body, 
-                            McpJsonUtilities.DefaultOptions);
-                        context.Request.Body.Position = 0;
-                        
-                        // Check if this session has been revoked
-                        if (context.Request.Headers.TryGetValue("Mcp-Session-Id", out var sessionIdHeader))
-                        {
-                            var sessionId = sessionIdHeader.ToString();
-                            
-                            if (rpcRequest?.Method == "tools/call")
-                            {
-                                toolCallCount++;
-                                
-                                // On first tool call, mark this session as revoked
-                                if (toolCallCount == 1)
-                                {
-                                    revokedSessionIds.Add(sessionId);
-                                }
-                                
-                                // If session is revoked, return error
-                                if (revokedSessionIds.Contains(sessionId))
-                                {
-                                    var error = new JsonRpcError
-                                    {
-                                        Id = rpcRequest.Id,
-                                        Error = new JsonRpcErrorDetail
-                                        {
-                                            Code = (int)McpErrorCode.InvalidRequest,
-                                            Message = "Session has been revoked or expired"
-                                        }
-                                    };
-                                    context.Response.ContentType = "application/json";
-                                    await JsonSerializer.SerializeAsync(context.Response.Body, error, McpJsonUtilities.DefaultOptions);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    await next();
-                });
-            });
-        
-        using IChatClient sut = CreateTestChatClient(out var leafClientState);
-        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
-        {
-            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
-        };
-        var options = new ChatOptions { Tools = [mcpTool] };
-    
-        // Act
-        var response = streaming ? 
-            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
-            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
-    
-        // Assert - Should have retried with a new session and succeeded
-        Assert.Equal(2, toolCallCount); // First attempt + retry
-        Assert.Single(revokedSessionIds); // One session was revoked
-        AssertResponseWithInvocation(response);
-        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UseMcpClient_CachesClientForSameServerAddress(bool streaming)
-    {
-        // Arrange
-        await using var _ = await StartServerAsync();
-        using IChatClient sut = CreateTestChatClient(out var leafClientState);
-        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
-        {
-            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire
-        };
-        var options = new ChatOptions { Tools = [mcpTool] };
-
-        // Act - First call
-        var response = streaming ? 
-            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
-            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
-
-        // Assert - First call should succeed and produce tools
-        AssertResponseWithInvocation(response);
-        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
-        Assert.NotNull(leafClientState.CapturedOptions);
-        Assert.NotNull(leafClientState.CapturedOptions.Tools);
-        var firstCallToolCount = leafClientState.CapturedOptions.Tools.Count;
-        Assert.Equal(3, firstCallToolCount);
-        var toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
-        Assert.Contains("echo", toolNames);
-        Assert.Contains("echoSessionId", toolNames);
-        Assert.Contains("sampleLLM", toolNames);
-
-        // Arrange
-        leafClientState.Clear();
-
-        // Act - Second call with same server address (should use cached client)
-        var secondResponse = streaming ? 
-            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
-            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
-
-        // Assert - Second call should also succeed with same tools
-        AssertResponseWithInvocation(secondResponse);
-        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
-        Assert.NotNull(leafClientState.CapturedOptions);
-        Assert.NotNull(leafClientState.CapturedOptions.Tools);
-        var secondCallToolCount = leafClientState.CapturedOptions.Tools.Count;
-        Assert.Equal(3, secondCallToolCount);
-        Assert.Equal(firstCallToolCount, secondCallToolCount);
-        toolNames = leafClientState.CapturedOptions.Tools.Select(t => t.Name).ToList();
-        Assert.Contains("echo", toolNames);
-        Assert.Contains("echoSessionId", toolNames);
-        Assert.Contains("sampleLLM", toolNames);
     }
 
     [Theory]
