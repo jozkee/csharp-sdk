@@ -1,6 +1,5 @@
 ﻿using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -20,6 +19,7 @@ public static class McpChatClientBuilderExtensions
     /// <param name="builder">The <see cref="ChatClientBuilder"/> to configure.</param>
     /// <param name="httpClient">The <see cref="HttpClient"/> to use, or <see langword="null"/> to create a new instance.</param>
     /// <param name="loggerFactory">The <see cref="ILoggerFactory"/> to use, or <see langword="null"/> to resolve from services.</param>
+    /// <param name="configureTransportOptions">An optional callback to configure the <see cref="HttpClientTransportOptions"/> for each <see cref="HostedMcpServerTool"/>.</param>
     /// <returns>The <see cref="ChatClientBuilder"/> for method chaining.</returns>
     /// <remarks>
     /// <para>
@@ -35,12 +35,13 @@ public static class McpChatClientBuilderExtensions
     public static ChatClientBuilder UseMcpClient(
         this ChatClientBuilder builder,
         HttpClient? httpClient = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Action<HostedMcpServerTool, HttpClientTransportOptions>? configureTransportOptions = null)
     {
         return builder.Use((innerClient, services) =>
         {
             loggerFactory ??= (ILoggerFactory)services.GetService(typeof(ILoggerFactory))!;
-            var chatClient = new McpChatClient(innerClient, httpClient, loggerFactory);
+            var chatClient = new McpChatClient(innerClient, httpClient, loggerFactory, configureTransportOptions);
             return chatClient;
         });
     }
@@ -53,6 +54,7 @@ public static class McpChatClientBuilderExtensions
         private readonly HttpClient _httpClient;
         private readonly bool _ownsHttpClient;
         private readonly McpClientTasksLruCache _lruCache;
+        private readonly Action<HostedMcpServerTool, HttpClientTransportOptions>? _configureTransportOptions;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="McpChatClient"/> class.
@@ -60,7 +62,8 @@ public static class McpChatClientBuilderExtensions
         /// <param name="innerClient">The underlying <see cref="IChatClient"/>, or the next instance in a chain of clients.</param>
         /// <param name="httpClient">An optional <see cref="HttpClient"/> to use when connecting to MCP servers. If not provided, a new instance will be created.</param>
         /// <param name="loggerFactory">An <see cref="ILoggerFactory"/> to use for logging information about function invocation.</param>
-        public McpChatClient(IChatClient innerClient, HttpClient? httpClient = null, ILoggerFactory? loggerFactory = null)
+        /// <param name="configureTransportOptions">An optional callback to configure the <see cref="HttpClientTransportOptions"/> for each <see cref="HostedMcpServerTool"/>.</param>
+        public McpChatClient(IChatClient innerClient, HttpClient? httpClient = null, ILoggerFactory? loggerFactory = null, Action<HostedMcpServerTool, HttpClientTransportOptions>? configureTransportOptions = null)
             : base(innerClient)
         {
             _loggerFactory = loggerFactory;
@@ -68,6 +71,7 @@ public static class McpChatClientBuilderExtensions
             _httpClient = httpClient ?? new HttpClient();
             _ownsHttpClient = httpClient is null;
             _lruCache = new McpClientTasksLruCache(capacity: 20);
+            _configureTransportOptions = configureTransportOptions;
         }
 
         public override async Task<ChatResponse> GetResponseAsync(
@@ -118,7 +122,7 @@ public static class McpChatClientBuilderExtensions
                 }
 
                 // Get MCP client and its tools from cache (both are fetched together on first access).
-                var (_, mcpTools) = await GetClientAndToolsAsync(mcpTool.ServerAddress, parsedAddress, mcpTool.ServerName, mcpTool.AuthorizationToken).ConfigureAwait(false);
+                var (_, mcpTools) = await GetClientAndToolsAsync(mcpTool, parsedAddress).ConfigureAwait(false);
 
                 // Add the listed functions to our list of tools we'll pass to the inner client.
                 foreach (var mcpFunction in mcpTools)
@@ -132,12 +136,7 @@ public static class McpChatClientBuilderExtensions
                         continue;
                     }
 
-                    var wrappedFunction = new McpRetriableAIFunction(mcpFunction, 
-                        mcpTool.ServerAddress,
-                        parsedAddress,
-                        mcpTool.ServerName,
-                        mcpTool.AuthorizationToken,
-                        this);
+                    var wrappedFunction = new McpRetriableAIFunction(mcpFunction, mcpTool, parsedAddress, this);
 
                     switch (mcpTool.ApprovalMode)
                     {
@@ -172,14 +171,14 @@ public static class McpChatClientBuilderExtensions
             base.Dispose(disposing);
         }
 
-        internal async Task<(McpClient Client, IList<McpClientTool> Tools)> GetClientAndToolsAsync(string key, Uri serverAddress, string serverName, string? authorizationToken)
+        internal async Task<(McpClient Client, IList<McpClientTool> Tools)> GetClientAndToolsAsync(HostedMcpServerTool mcpTool, Uri serverAddressUri)
         {
             // Note: We don't pass cancellationToken to the factory because the cached task should not be tied to any single caller's cancellation token.
             // Instead, callers can cancel waiting for the task, but the connection attempt itself will complete independently.
             Task<(McpClient, IList<McpClientTool> Tools)> task = _lruCache.GetOrAdd(
-                key,
-                static (_, state) => state.self.CreateMcpClientAndToolsAsync(state.serverAddress, state.serverName, state.authorizationToken, CancellationToken.None),
-                (self: this, serverAddress, serverName, authorizationToken));
+                mcpTool.ServerAddress,
+                static (_, state) => state.self.CreateMcpClientAndToolsAsync(state.mcpTool, state.serverAddressUri, CancellationToken.None),
+                (self: this, mcpTool, serverAddressUri));
 
             try
             {
@@ -187,32 +186,59 @@ public static class McpChatClientBuilderExtensions
             }
             catch
             {
-                bool result = RemoveMcpClientFromCache(key, out var removedTask);
+                bool result = RemoveMcpClientFromCache(mcpTool.ServerAddress, out var removedTask);
                 Debug.Assert(result && removedTask!.Status != TaskStatus.RanToCompletion);
                 throw;
             }
         }
 
-        private async Task<(McpClient Client, IList<McpClientTool> Tools)> CreateMcpClientAndToolsAsync(Uri serverAddress, string serverName, string? authorizationToken, CancellationToken cancellationToken)
+        private async Task<(McpClient Client, IList<McpClientTool> Tools)> CreateMcpClientAndToolsAsync(HostedMcpServerTool mcpTool, Uri serverAddressUri, CancellationToken cancellationToken)
         {
-            var transport = new HttpClientTransport(new HttpClientTransportOptions
+            var transportOptions = new HttpClientTransportOptions
             {
-                Endpoint = serverAddress,
-                Name = serverName,
-                AdditionalHeaders = authorizationToken is not null
+                Endpoint = serverAddressUri,
+                Name = mcpTool.ServerName,
+                AdditionalHeaders = mcpTool.AuthorizationToken is not null
                     // Update to pass all headers once https://github.com/dotnet/extensions/pull/7053 is available.
-                    ? new Dictionary<string, string>() { { "Authorization", $"Bearer {authorizationToken}" } }
+                    ? new Dictionary<string, string>() { { "Authorization", $"Bearer {mcpTool.AuthorizationToken}" } }
                     : null,
-            }, _httpClient, _loggerFactory);
+            };
+
+            _configureTransportOptions?.Invoke(new DummyHostedMcpServerTool(mcpTool.ServerName, serverAddressUri), transportOptions);
+            var transport = new HttpClientTransport(transportOptions, _httpClient, _loggerFactory);
 
             var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken).ConfigureAwait(false);
-            var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            
-            return (client, tools);
+            try
+            {
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return (client, tools);
+            }
+            catch
+            {
+                try
+                {
+                    await client.DisposeAsync().ConfigureAwait(false);
+                }
+                catch { } // allow the original exception to propagate
+                
+                throw;
+            }
         }
 
         internal bool RemoveMcpClientFromCache(string key, out Task<(McpClient Client, IList<McpClientTool> Tools)>? removedTask)
             => _lruCache.TryRemove(key, out removedTask);
+
+        /// <summary>
+        /// A temporary <see cref="HostedMcpServerTool"/> instance passed to the configureTransportOptions callback.
+        /// This prevents the callback from modifying the original tool instance.
+        /// </summary>
+        private sealed class DummyHostedMcpServerTool : HostedMcpServerTool
+        {
+            public DummyHostedMcpServerTool(string serverName, Uri serverAddress)
+                : base(serverName, serverAddress)
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -222,19 +248,15 @@ public static class McpChatClientBuilderExtensions
     [Experimental("MEAI001")]
     private sealed class McpRetriableAIFunction : DelegatingAIFunction
     {
-        private readonly string _serverAddress;
+        private readonly HostedMcpServerTool _mcpTool;
         private readonly Uri _serverAddressUri;
-        private readonly string _serverName;
-        private readonly string? _authorizationToken;
         private readonly McpChatClient _chatClient;
 
-        public McpRetriableAIFunction(AIFunction innerFunction, string serverAddress, Uri serverAddressUri, string serverName, string? authorizationToken, McpChatClient chatClient)
+        public McpRetriableAIFunction(AIFunction innerFunction, HostedMcpServerTool mcpTool, Uri serverAddressUri, McpChatClient chatClient)
             : base(innerFunction)
         {
-            _serverAddress = serverAddress;
+            _mcpTool = mcpTool;
             _serverAddressUri = serverAddressUri;
-            _serverName = serverName;
-            _authorizationToken = authorizationToken;
             _chatClient = chatClient;
         }
 
@@ -244,25 +266,25 @@ public static class McpChatClientBuilderExtensions
             {
                 return await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException)
-            {
-                bool result = _chatClient.RemoveMcpClientFromCache(_serverAddress, out var removedTask);
-                Debug.Assert(result && removedTask!.Status == TaskStatus.RanToCompletion);
+            catch (HttpRequestException) { }
 
-                var freshTool = await GetCurrentToolAsync(cancellationToken).ConfigureAwait(false);
-                return await freshTool.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
-            }
+            bool result = _chatClient.RemoveMcpClientFromCache(_mcpTool.ServerAddress, out var removedTask);
+            Debug.Assert(result && removedTask!.Status == TaskStatus.RanToCompletion);
+            _ = removedTask!.Result.Client.DisposeAsync().ConfigureAwait(false);
+            var freshTool = await GetCurrentToolAsync(cancellationToken).ConfigureAwait(false);
+            return await freshTool.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
         }
         
         private async Task<AIFunction> GetCurrentToolAsync(CancellationToken cancellationToken)
         {
-            var (_, tools) = await _chatClient.GetClientAndToolsAsync(
-                key: _serverAddress,
-                _serverAddressUri, 
-                _serverName,
-                _authorizationToken).ConfigureAwait(false);
+            Debug.Assert(Uri.TryCreate(_mcpTool.ServerAddress, UriKind.Absolute, out var parsedAddress) &&
+                        (parsedAddress.Scheme == Uri.UriSchemeHttp || parsedAddress.Scheme == Uri.UriSchemeHttps),
+                        "Server address should have been validated before construction");
+
+            var (client, tools) = await _chatClient.GetClientAndToolsAsync(_mcpTool, _serverAddressUri!).ConfigureAwait(false);
             
-            return tools.FirstOrDefault(t => t.Name == Name) ?? throw new InvalidOperationException($"Tool '{Name}' no longer exists on the MCP server.");
+            return tools.FirstOrDefault(t => t.Name == Name) ?? 
+                throw new McpProtocolException($"Tool '{Name}' no longer exists on the MCP server.", McpErrorCode.InvalidParams);
         }
     }
 }

@@ -159,7 +159,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
         }
     }
 
-    private IChatClient CreateTestChatClient(out LeafChatClientState leafClientState)
+    private IChatClient CreateTestChatClient(out LeafChatClientState leafClientState, Action<HostedMcpServerTool, HttpClientTransportOptions>? configureTransportOptions = null)
     {
         var state = new LeafChatClientState();
 
@@ -181,7 +181,7 @@ public class UseMcpClientTests : KestrelInMemoryTest
 
         leafClientState = state;
         return mockInnerClient.Object.AsBuilder()
-            .UseMcpClient(HttpClient, LoggerFactory)
+            .UseMcpClient(HttpClient, LoggerFactory, configureTransportOptions)
             // Placement is important, must be after UseMcpClient, otherwise; UseFunctionInvocation won't see the MCP tools.
             .UseFunctionInvocation() 
             .Build();
@@ -751,5 +751,51 @@ public class UseMcpClientTests : KestrelInMemoryTest
             sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
             sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken));
         Assert.Contains("test-connector-123", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UseMcpClient_ConfigureTransportOptions_CallbackIsInvoked(bool streaming)
+    {
+        // Arrange
+        HostedMcpServerTool? capturedTool = null;
+        HttpClientTransportOptions? capturedTransportOptions = null;
+        await using var _ = await StartServerAsync();
+        
+        using IChatClient sut = CreateTestChatClient(out var leafClientState, (tool, transportOptions) =>
+        {
+            capturedTool = tool;
+            capturedTransportOptions = transportOptions;
+        });
+
+        var mcpTool = new HostedMcpServerTool("serverName", HttpClient.BaseAddress!)
+        {
+            ApprovalMode = HostedMcpServerToolApprovalMode.NeverRequire,
+            AuthorizationToken = "test-auth-token-123"
+        };
+        var options = new ChatOptions { Tools = [mcpTool] };
+
+        // Act
+        var response = streaming ? 
+            await sut.GetStreamingResponseAsync("Test message", options, TestContext.Current.CancellationToken).ToChatResponseAsync(TestContext.Current.CancellationToken) :
+            await sut.GetResponseAsync("Test message", options, TestContext.Current.CancellationToken);
+
+        // Assert
+        AssertResponseWithInvocation(response);
+        AssertLeafClientMessagesWithInvocation(leafClientState.CapturedMessages);
+
+        Assert.NotNull(capturedTool);
+        Assert.Equal("serverName", capturedTool.ServerName);
+        Assert.Equal(HttpClient.BaseAddress!.ToString(), capturedTool.ServerAddress);
+        Assert.Null(capturedTool.ServerDescription);
+        Assert.Null(capturedTool.AuthorizationToken);
+        Assert.Null(capturedTool.AllowedTools);
+        Assert.Null(capturedTool.ApprovalMode);
+
+        Assert.NotNull(capturedTransportOptions);
+        Assert.Equal(HttpClient.BaseAddress, capturedTransportOptions.Endpoint);
+        Assert.Equal("serverName", capturedTransportOptions.Name);
+        Assert.Equal("Bearer test-auth-token-123", capturedTransportOptions.AdditionalHeaders!["Authorization"]);
     }
 }
