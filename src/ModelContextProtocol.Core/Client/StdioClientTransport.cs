@@ -430,8 +430,12 @@ public sealed partial class StdioClientTransport : IClientTransport
         }
     }
 
+    /// <summary>
+    /// Escapes cmd's metacharacters in an argument destined for cmd.exe itself. Only arguments without
+    /// whitespace are escaped; arguments with whitespace are quoted by the standard argv quoting.
+    /// </summary>
     private static string EscapeArgumentString(string argument) =>
-        !ContainsWhitespaceRegex.IsMatch(argument) ?
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !ContainsWhitespaceRegex.IsMatch(argument) ?
         WindowsCliSpecialArgumentsRegex.Replace(argument, static match => "^" + match.Value) :
         argument;
 
