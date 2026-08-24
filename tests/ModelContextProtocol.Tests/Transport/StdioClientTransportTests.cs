@@ -340,6 +340,60 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
     }
 
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public async Task BatchFileCommand_PathContainingPercent_LaunchesWithoutEnvironmentExpansion()
+    {
+        // A resolved batch path may legitimately contain a %NAME% sequence. cmd.exe expands %VAR% even
+        // inside quotes, so the transport must percent-escape the batch path; otherwise the launch would
+        // resolve to a different (nonexistent) path selected by the child environment.
+        string testServerExe = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        Assert.True(File.Exists(testServerExe), $"Expected TestServer.exe next to the test assembly at '{testServerExe}'.");
+
+        string parentDirectory = Path.Combine(Path.GetTempPath(), $"mcp-pct-{Guid.NewGuid():N}");
+        // A directory whose name literally contains %USERNAME%, a variable that is defined in the child
+        // environment. Unescaped, cmd.exe would expand it and fail to find the shim.
+        string shimDirectory = Path.Combine(parentDirectory, "%USERNAME%");
+        Directory.CreateDirectory(shimDirectory);
+        try
+        {
+            string shimBaseName = $"mcp-shim-{Guid.NewGuid():N}";
+            string shimPath = Path.Combine(shimDirectory, shimBaseName + ".cmd");
+            File.WriteAllText(shimPath, $"@echo off\r\n\"{testServerExe}\" %*\r\n");
+
+            string existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+
+            StdioClientTransportOptions options = new()
+            {
+                Name = "TestServer",
+                Command = shimBaseName, // No extension: resolved to the .cmd shim via PATH/PATHEXT.
+                Arguments = ["--cli-arg=percent path ok"],
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["PATH"] = shimDirectory + Path.PathSeparator + existingPath,
+                },
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+
+            await using var client = await McpClient.CreateAsync(transport, loggerFactory: LoggerFactory, cancellationToken: TestContext.Current.CancellationToken);
+
+            var result = await client.CallToolAsync("echoCliArg", cancellationToken: TestContext.Current.CancellationToken);
+            var content = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+            Assert.Equal("percent path ok", content.Text);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(parentDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
     public void ResolveWindowsCommand_CommandWithExtension_ResolvesToDoubleExtensionShim()
     {
         // A command that already carries an extension (e.g. "foo.exe") must still be resolved to a
@@ -403,6 +457,32 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
             File.WriteAllText(expectedPath, "@echo off\r\n");
 
             string? resolved = InvokeResolveWindowsCommand(command, currentDirectory: workingDirectory);
+
+            Assert.Equal(expectedPath, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_RelativePathEntry_ResolvesAgainstCurrentDirectory()
+    {
+        // A relative PATH entry (for example "tools") must be evaluated against the supplied working
+        // directory, not the SDK host's actual current directory, so a shim under the configured
+        // WorkingDirectory is found.
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string relativePathEntry = "tools";
+        string command = $"probe-{Guid.NewGuid():N}";
+        string toolsDirectory = Path.Combine(workingDirectory, relativePathEntry);
+        Directory.CreateDirectory(toolsDirectory);
+        try
+        {
+            string expectedPath = Path.Combine(toolsDirectory, command + ".cmd");
+            File.WriteAllText(expectedPath, "@echo off\r\n");
+
+            string? resolved = InvokeResolveWindowsCommand(command, processPath: null, currentDirectory: workingDirectory, path: relativePathEntry);
 
             Assert.Equal(expectedPath, resolved, ignoreCase: true);
         }

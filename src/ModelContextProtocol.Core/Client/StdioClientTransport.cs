@@ -338,7 +338,12 @@ public sealed partial class StdioClientTransport : IClientTransport
         // strips before executing the enclosed script.
         builder.Append("/e:ON /v:OFF /d /c \"");
 
-        builder.Append('"').Append(batchFilePath).Append('"');
+        // The script path is wrapped in quotes, but cmd.exe still expands %NAME% inside quotes, so the
+        // path's percent signs are escaped the same way as argument percent signs to keep a literal path
+        // such as C:\tools\%PROFILE%\server.cmd from being redirected by the child environment.
+        builder.Append('"');
+        AppendEscapingPercent(builder, batchFilePath);
+        builder.Append('"');
 
         if (arguments is not null)
         {
@@ -418,6 +423,24 @@ public sealed partial class StdioClientTransport : IClientTransport
         {
             builder.Append('\\', backslashes);
             builder.Append('"');
+        }
+    }
+
+    /// <summary>
+    /// Appends <paramref name="value"/> to <paramref name="builder"/>, replacing each percent sign with a
+    /// zero-length expansion of the built-in <c>cd</c> variable so cmd.exe does not perform <c>%VAR%</c>
+    /// expansion. Used for the batch script path, which is quoted but still subject to percent expansion.
+    /// </summary>
+    private static void AppendEscapingPercent(StringBuilder builder, string value)
+    {
+        foreach (char c in value)
+        {
+            if (c == '%')
+            {
+                builder.Append("%%cd:~,");
+            }
+
+            builder.Append(c);
         }
     }
 

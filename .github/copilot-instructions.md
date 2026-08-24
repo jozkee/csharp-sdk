@@ -147,8 +147,8 @@ The test project multi-targets several frameworks (.NET 10.0, .NET 9.0, .NET 8.0
 Combine them for the tightest loop, for example:
 
 ```
-dotnet build tests\ModelContextProtocol.Tests\ModelContextProtocol.Tests.csproj -f net10.0
-dotnet test tests\ModelContextProtocol.Tests\ModelContextProtocol.Tests.csproj -f net10.0 --no-build --filter FullyQualifiedName~MyTestName
+dotnet build tests/ModelContextProtocol.Tests/ModelContextProtocol.Tests.csproj -f net10.0
+dotnet test tests/ModelContextProtocol.Tests/ModelContextProtocol.Tests.csproj -f net10.0 --no-build --filter FullyQualifiedName~MyTestName
 ```
 
 Before considering the change complete, still run the full `dotnet build` and `dotnet test` across all target frameworks to catch framework-specific issues (e.g. APIs missing on .NET Standard 2.0 / .NET Framework 4.7.2).

@@ -86,7 +86,7 @@ internal static class WindowsCommandResolver
             {
                 string directory = rawDirectory.Trim().Trim('"');
                 if (directory.Length != 0 && seenDirectories.Add(directory) &&
-                    FindFirstCandidate(Path.Combine(directory, command), probeExactName, extensions) is { } pathResult)
+                    FindFirstCandidate(Path.Combine(currentDirectory, directory, command), probeExactName, extensions) is { } pathResult)
                 {
                     return pathResult;
                 }
