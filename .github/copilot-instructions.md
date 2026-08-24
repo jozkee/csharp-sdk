@@ -137,6 +137,22 @@ The SDK consists of three main packages:
 
 Do not skip or defer building and testing. These are mandatory steps for every code change, no matter how small.
 
+### Faster ways to iterate
+The test project multi-targets several frameworks (.NET 10.0, .NET 9.0, .NET 8.0, .NET Framework 4.7.2), and `dotnet test` runs the selected tests against *each* target sequentially. A small filter can still take 12–18 minutes of wall time because of real out-of-process test server launches multiplied across every framework. To iterate quickly while developing:
+
+- **Pin a single framework** (prefer the latest): `dotnet test -f net10.0`
+- **Narrow to a specific test** with a filter: `dotnet test --filter FullyQualifiedName~MyTestName`
+- **Skip the rebuild once built**: add `--no-build` (build once with `dotnet build -f net10.0`, then reuse it)
+
+Combine them for the tightest loop, for example:
+
+```
+dotnet build tests\ModelContextProtocol.Tests\ModelContextProtocol.Tests.csproj -f net10.0
+dotnet test tests\ModelContextProtocol.Tests\ModelContextProtocol.Tests.csproj -f net10.0 --no-build --filter FullyQualifiedName~MyTestName
+```
+
+Before considering the change complete, still run the full `dotnet build` and `dotnet test` across all target frameworks to catch framework-specific issues (e.g. APIs missing on .NET Standard 2.0 / .NET Framework 4.7.2).
+
 ### SDK Requirements
 - The repo currently requires the .NET SDK 10.0 to build and run tests.
 - Target frameworks: .NET 10.0, .NET 9.0, .NET 8.0, .NET Standard 2.0

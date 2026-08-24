@@ -3,15 +3,19 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Tests.Utils;
 using System.IO.Pipelines;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
 namespace ModelContextProtocol.Tests.Transport;
 
+[Collection(nameof(DisableParallelization))]
 public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : LoggedTest(testOutputHelper)
 {
     public static bool IsStdErrCallbackSupported => !PlatformDetection.IsMonoRuntime;
+
+    public static bool IsWindows => PlatformDetection.IsWindows;
 
     [Fact]
     public async Task ConnectAsync_DoesNotLogEnvironmentVariablesAtTrace()
@@ -185,6 +189,305 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         var result = await client.CallToolAsync("echoCliArg", cancellationToken: TestContext.Current.CancellationToken);
         var content = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
         Assert.Equal(cliArgumentValue ?? "", content.Text);
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public async Task CommandPathWithSpaces_RoundTripsArguments()
+    {
+        // Regression test for #1601: a command whose absolute path contains a space must launch
+        // and round-trip its arguments unchanged. The transport resolves the command via
+        // PATH/PATHEXT and launches it directly (no cmd.exe wrapping), so a directly-launched
+        // executable preserves every argument exactly, including cmd metacharacters.
+        string[] argumentValues =
+        [
+            "&", "|", ">", "<", "^", "^&<>|",
+            "argument with spaces",
+            "value with \"quotes\" and spaces",
+            "C:\\EndsWithBackslash\\",
+            "$(echo injected)",
+            "http://localhost:1234/callback?foo=1&bar=2",
+        ];
+
+        string sourceExe = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        Assert.True(File.Exists(sourceExe), $"Expected TestServer.exe next to the test assembly at '{sourceExe}'.");
+
+        // Copy the entire output (TestServer plus its runtime dependencies) into a directory whose
+        // path contains a space. Copying once keeps the test fast while exercising every argument.
+        string spacedDir = Path.Combine(Path.GetTempPath(), $"mcp test dir {Guid.NewGuid():N}");
+        Directory.CreateDirectory(spacedDir);
+        try
+        {
+            CopyDirectoryRecursively(AppContext.BaseDirectory, spacedDir);
+
+            string command = Path.Combine(spacedDir, "TestServer.exe");
+            Assert.Contains(' ', command);
+
+            foreach (string argumentValue in argumentValues)
+            {
+                StdioClientTransportOptions options = new()
+                {
+                    Name = "TestServer",
+                    Command = command,
+                    Arguments = [$"--cli-arg={argumentValue}"],
+                };
+
+                var transport = new StdioClientTransport(options, LoggerFactory);
+
+                await using var client = await McpClient.CreateAsync(transport, loggerFactory: LoggerFactory, cancellationToken: TestContext.Current.CancellationToken);
+
+                var result = await client.CallToolAsync("echoCliArg", cancellationToken: TestContext.Current.CancellationToken);
+                var content = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+                Assert.Equal(argumentValue, content.Text);
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(spacedDir, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup; the process handle may still be releasing.
+            }
+        }
+
+        static void CopyDirectoryRecursively(string sourceDirectory, string destinationDirectory)
+        {
+            string sourceRoot = sourceDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+            foreach (string sourceSubdirectory in Directory.GetDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                string relativeDirectory = sourceSubdirectory.Substring(sourceRoot.Length);
+                Directory.CreateDirectory(Path.Combine(destinationDirectory, relativeDirectory));
+            }
+
+            foreach (string sourceFile in Directory.GetFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                string relativeFile = sourceFile.Substring(sourceRoot.Length);
+                string destinationFile = Path.Combine(destinationDirectory, relativeFile);
+                string? destinationParent = Path.GetDirectoryName(destinationFile);
+                if (!string.IsNullOrEmpty(destinationParent))
+                {
+                    Directory.CreateDirectory(destinationParent);
+                }
+
+                File.Copy(sourceFile, destinationFile, overwrite: true);
+            }
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_CommandWithExtension_ResolvesToDoubleExtensionShim()
+    {
+        // A command that already carries an extension (e.g. "foo.exe") must still be resolved to a
+        // "foo.exe.cmd" shim when no bare "foo.exe" exists, because a Windows shell (PowerShell) and
+        // npm cross-spawn both append every PATHEXT extension to the command name unconditionally.
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workingDirectory);
+        try
+        {
+            string baseName = $"probe-{Guid.NewGuid():N}.exe";
+            string shimPath = Path.Combine(workingDirectory, baseName + ".cmd");
+            File.WriteAllText(shimPath, "@echo off\r\n");
+
+            string? resolved = InvokeResolveWindowsCommand(baseName, currentDirectory: workingDirectory);
+
+            Assert.Equal(shimPath, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_BareNamePreferredOverDoubleExtensionShim()
+    {
+        // When both "foo.exe" and "foo.exe.cmd" exist, the exact command "foo.exe" wins: a command
+        // that already has an extension is probed as the bare name first (PowerShell's ordering),
+        // before any PATHEXT-appended candidate such as "foo.exe.cmd".
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workingDirectory);
+        try
+        {
+            string baseName = $"probe-{Guid.NewGuid():N}.exe";
+            string exactPath = Path.Combine(workingDirectory, baseName);
+            File.WriteAllText(exactPath, string.Empty);
+            File.WriteAllText(Path.Combine(workingDirectory, baseName + ".cmd"), "@echo off\r\n");
+
+            string? resolved = InvokeResolveWindowsCommand(baseName, currentDirectory: workingDirectory);
+
+            Assert.Equal(exactPath, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_RelativeDirectoryCommand_ResolvesFromWorkingDirectory()
+    {
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string command = Path.Combine("relative tools", $"probe-{Guid.NewGuid():N}");
+        Assert.False(Path.IsPathRooted(command));
+        Assert.NotNull(Path.GetDirectoryName(command));
+
+        string expectedPath = Path.Combine(workingDirectory, command + ".cmd");
+        Directory.CreateDirectory(Path.GetDirectoryName(expectedPath)!);
+        try
+        {
+            File.WriteAllText(expectedPath, "@echo off\r\n");
+
+            string? resolved = InvokeResolveWindowsCommand(command, currentDirectory: workingDirectory);
+
+            Assert.Equal(expectedPath, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_UsesProcessCurrentThenPathOrder()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string processDirectory = Path.Combine(root, "process");
+        string currentDirectory = Path.Combine(root, "current");
+        string pathDirectory = Path.Combine(root, "path");
+        Directory.CreateDirectory(processDirectory);
+        Directory.CreateDirectory(currentDirectory);
+        Directory.CreateDirectory(pathDirectory);
+        try
+        {
+            string command = $"probe-{Guid.NewGuid():N}";
+            string processCandidate = Path.Combine(processDirectory, command + ".exe");
+            string currentCandidate = Path.Combine(currentDirectory, command + ".exe");
+            string pathCandidate = Path.Combine(pathDirectory, command + ".exe");
+            File.WriteAllText(processCandidate, string.Empty);
+            File.WriteAllText(currentCandidate, string.Empty);
+            File.WriteAllText(pathCandidate, string.Empty);
+
+            Assert.Equal(processCandidate, InvokeResolveWindowsCommand(command, Path.Combine(processDirectory, "host.exe"), currentDirectory, pathDirectory), ignoreCase: true);
+            File.Delete(processCandidate);
+            Assert.Equal(currentCandidate, InvokeResolveWindowsCommand(command, Path.Combine(processDirectory, "host.exe"), currentDirectory, pathDirectory), ignoreCase: true);
+            File.Delete(currentCandidate);
+            Assert.Equal(pathCandidate, InvokeResolveWindowsCommand(command, Path.Combine(processDirectory, "host.exe"), currentDirectory, pathDirectory), ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_PathHardeningHandlesQuotesDuplicatesAndMissingDots()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string currentDirectory = Path.Combine(root, "current");
+        string pathDirectory = Path.Combine(root, "path with spaces");
+        Directory.CreateDirectory(currentDirectory);
+        Directory.CreateDirectory(pathDirectory);
+        try
+        {
+            string command = $"probe-{Guid.NewGuid():N}";
+            string expected = Path.Combine(pathDirectory, command + ".cmd");
+            File.WriteAllText(expected, string.Empty);
+            string path = $";\"{pathDirectory}\";{pathDirectory};";
+
+            string? resolved = InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, path, pathExt: "CMD;.cmd");
+
+            Assert.Equal(expected, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_NoDefaultCurrentDirectorySearchUsesPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string currentDirectory = Path.Combine(root, "current");
+        string pathDirectory = Path.Combine(root, "path");
+        Directory.CreateDirectory(currentDirectory);
+        Directory.CreateDirectory(pathDirectory);
+        string? originalValue = Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath");
+        try
+        {
+            string command = $"probe-{Guid.NewGuid():N}";
+            string currentCandidate = Path.Combine(currentDirectory, command + ".exe");
+            string pathCandidate = Path.Combine(pathDirectory, command + ".exe");
+            File.WriteAllText(currentCandidate, string.Empty);
+            File.WriteAllText(pathCandidate, string.Empty);
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", "1");
+
+            string? resolved = InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, pathDirectory);
+
+            Assert.Equal(pathCandidate, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", originalValue);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_MissingPathExtProbesOnlyExactName()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string currentDirectory = Path.Combine(root, "current");
+        string pathDirectory = Path.Combine(root, "path");
+        Directory.CreateDirectory(currentDirectory);
+        Directory.CreateDirectory(pathDirectory);
+        try
+        {
+            string command = $"probe-{Guid.NewGuid():N}";
+            string exactPath = Path.Combine(pathDirectory, command);
+            File.WriteAllText(exactPath + ".exe", string.Empty);
+
+            Assert.Null(InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, pathDirectory, pathExt: null));
+
+            File.WriteAllText(exactPath, string.Empty);
+            Assert.Equal(exactPath, InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, pathDirectory, pathExt: null), ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void WindowsCommandResolver_GetCurrentProcessPath_ReturnsExistingExecutable()
+    {
+        MethodInfo method = typeof(StdioClientTransport).Assembly
+            .GetType("ModelContextProtocol.Client.WindowsCommandResolver", throwOnError: true)!
+            .GetMethod("GetCurrentProcessPath", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.GetCurrentProcessPath via reflection.");
+
+        string? processPath = (string?)method.Invoke(null, null);
+
+        Assert.False(string.IsNullOrEmpty(processPath));
+        Assert.True(File.Exists(processPath), $"Process path does not exist: {processPath}");
+    }
+
+    private static string? InvokeResolveWindowsCommand(
+        string command,
+        string? processPath = null,
+        string? currentDirectory = null,
+        string? path = null,
+        string? pathExt = ".COM;.EXE;.BAT;.CMD")
+    {
+        MethodInfo method = typeof(StdioClientTransport).Assembly
+            .GetType("ModelContextProtocol.Client.WindowsCommandResolver", throwOnError: true)!
+            .GetMethod("Resolve", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.Resolve via reflection.");
+
+        return (string?)method.Invoke(null, [command, processPath, currentDirectory ?? Environment.CurrentDirectory, path, pathExt]);
     }
 
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]

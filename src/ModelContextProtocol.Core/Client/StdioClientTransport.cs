@@ -63,14 +63,6 @@ public sealed partial class StdioClientTransport : IClientTransport
 
         string command = _options.Command;
         IList<string>? arguments = _options.Arguments;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
-            !string.Equals(Path.GetFileName(command), "cmd.exe", StringComparison.OrdinalIgnoreCase))
-        {
-            // On Windows, for stdio, we need to wrap non-shell commands with cmd.exe /c {command} (usually npx or uvicorn).
-            // The stdio transport will not work correctly if the command is not run in a shell.
-            arguments = arguments is null or [] ? ["/c", command] : ["/c", command, ..arguments];
-            command = "cmd.exe";
-        }
 
         ILogger logger = (ILogger?)_loggerFactory?.CreateLogger<StdioClientTransport>() ?? NullLogger.Instance;
         try
@@ -98,13 +90,13 @@ public sealed partial class StdioClientTransport : IClientTransport
 #if NET
                 foreach (string arg in arguments)
                 {
-                    startInfo.ArgumentList.Add(EscapeArgumentString(arg));
+                    startInfo.ArgumentList.Add(arg);
                 }
 #else
                 StringBuilder argsBuilder = new();
                 foreach (string arg in arguments)
                 {
-                    PasteArguments.AppendArgument(argsBuilder, EscapeArgumentString(arg));
+                    PasteArguments.AppendArgument(argsBuilder, arg);
                 }
 
                 startInfo.Arguments = argsBuilder.ToString();
@@ -122,6 +114,18 @@ public sealed partial class StdioClientTransport : IClientTransport
                 {
                     startInfo.Environment[entry.Key] = entry.Value;
                 }
+            }
+
+            // Resolve after the environment is finalized so PATH/PATHEXT match what the child sees.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
+                WindowsCommandResolver.Resolve(
+                    startInfo.FileName,
+                    WindowsCommandResolver.GetCurrentProcessPath(),
+                    Environment.CurrentDirectory,
+                    startInfo.Environment.TryGetValue("PATH", out string? pathValue) ? pathValue : null,
+                    startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null) is { } resolvedCommand)
+            {
+                startInfo.FileName = resolvedCommand;
             }
 
             if (logger.IsEnabled(LogLevel.Trace))
@@ -287,26 +291,6 @@ public sealed partial class StdioClientTransport : IClientTransport
             return true;
         }
     }
-
-    private static string EscapeArgumentString(string argument) =>
-        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !ContainsWhitespaceRegex.IsMatch(argument) ?
-        WindowsCliSpecialArgumentsRegex.Replace(argument, static match => "^" + match.Value) :
-        argument;
-
-    private const string WindowsCliSpecialArgumentsRegexString = "[&^><|]";
-
-#if NET
-    private static Regex WindowsCliSpecialArgumentsRegex => GetWindowsCliSpecialArgumentsRegex();
-    private static Regex ContainsWhitespaceRegex => GetContainsWhitespaceRegex();
-
-    [GeneratedRegex(WindowsCliSpecialArgumentsRegexString, RegexOptions.CultureInvariant)]
-    private static partial Regex GetWindowsCliSpecialArgumentsRegex();
-    [GeneratedRegex(@"\s", RegexOptions.CultureInvariant)]
-    private static partial Regex GetContainsWhitespaceRegex();
-#else
-    private static Regex WindowsCliSpecialArgumentsRegex { get; } = new(WindowsCliSpecialArgumentsRegexString, RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static Regex ContainsWhitespaceRegex { get; } = new(@"\s", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-#endif
 
     [LoggerMessage(Level = LogLevel.Information, Message = "{EndpointName} connecting.")]
     private static partial void LogTransportConnecting(ILogger logger, string endpointName);
