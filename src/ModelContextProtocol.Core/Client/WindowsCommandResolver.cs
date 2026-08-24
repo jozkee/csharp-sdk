@@ -26,7 +26,8 @@ internal static class WindowsCommandResolver
         string? processPath,
         string currentDirectory,
         string? path,
-        string? pathExt)
+        string? pathExt,
+        string? noDefaultCurrentDirectoryInExePath)
     {
         string[] extensions = (pathExt ?? string.Empty)
             .Split([Path.PathSeparator], StringSplitOptions.RemoveEmptyEntries)
@@ -37,7 +38,7 @@ internal static class WindowsCommandResolver
             .ToArray();
 
         string fileName = Path.GetFileName(command);
-        bool probeExactName = extensions.Length == 0 || command.Contains('.') ||
+        bool probeExactName = extensions.Length == 0 || fileName.Contains('.') ||
             extensions.Any(extension => fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
 
         if (Path.IsPathRooted(command))
@@ -59,7 +60,7 @@ internal static class WindowsCommandResolver
             catch (ArgumentException) { }
         }
 
-        if ((containsDirectorySeparator || ShouldSearchCurrentDirectory()) &&
+        if ((containsDirectorySeparator || ShouldSearchCurrentDirectory(noDefaultCurrentDirectoryInExePath)) &&
             FindFirstCandidate(Path.Combine(currentDirectory, command), probeExactName, extensions) is { } currentDirectoryResult)
         {
             return currentDirectoryResult;
@@ -131,8 +132,9 @@ internal static class WindowsCommandResolver
     }
 
     // Matches Win32 NeedCurrentDirectoryForExePath: skip the current directory when the caller opted out.
-    private static bool ShouldSearchCurrentDirectory() =>
-        string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath"));
+    // The value comes from the finalized child environment so it reflects what the launched process sees.
+    private static bool ShouldSearchCurrentDirectory(string? noDefaultCurrentDirectoryInExePath) =>
+        string.IsNullOrEmpty(noDefaultCurrentDirectoryInExePath);
 
     // The trusted directories CreateProcess searches after the application and current directories and
     // before PATH: the system directory, the 16-bit system directory, and the Windows directory.

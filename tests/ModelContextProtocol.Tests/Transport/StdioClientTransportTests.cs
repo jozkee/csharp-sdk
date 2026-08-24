@@ -557,7 +557,6 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         string pathDirectory = Path.Combine(root, "path");
         Directory.CreateDirectory(currentDirectory);
         Directory.CreateDirectory(pathDirectory);
-        string? originalValue = Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath");
         try
         {
             string command = $"probe-{Guid.NewGuid():N}";
@@ -565,15 +564,15 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
             string pathCandidate = Path.Combine(pathDirectory, command + ".exe");
             File.WriteAllText(currentCandidate, string.Empty);
             File.WriteAllText(pathCandidate, string.Empty);
-            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", "1");
 
-            string? resolved = InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, pathDirectory);
+            // The opt-out value comes from the (child) environment passed to the resolver, so setting it
+            // must skip the current-directory candidate and fall through to PATH.
+            string? resolved = InvokeResolveWindowsCommand(command, processPath: null, currentDirectory, pathDirectory, noDefaultCurrentDirectoryInExePath: "1");
 
             Assert.Equal(pathCandidate, resolved, ignoreCase: true);
         }
         finally
         {
-            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", originalValue);
             Directory.Delete(root, recursive: true);
         }
     }
@@ -604,6 +603,33 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
     }
 
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public void ResolveWindowsCommand_DottedDirectory_DoesNotTreatDirectoryDotAsExtension()
+    {
+        // A dot in a *directory* name must not make an extensionless command probe its exact
+        // (extensionless) name; the exact-name decision is based on the file name only, so a rooted
+        // command "C:\tools.v1\server" resolves to "server.exe" rather than an extensionless decoy.
+        string root = Path.Combine(Path.GetTempPath(), $"mcp-resolve-{Guid.NewGuid():N}");
+        string dottedDirectory = Path.Combine(root, "tools.v1");
+        Directory.CreateDirectory(dottedDirectory);
+        try
+        {
+            string command = Path.Combine(dottedDirectory, "server");
+            Assert.True(Path.IsPathRooted(command));
+            File.WriteAllText(command, string.Empty); // Extensionless decoy that must not win.
+            string expected = command + ".exe";
+            File.WriteAllText(expected, string.Empty);
+
+            string? resolved = InvokeResolveWindowsCommand(command);
+
+            Assert.Equal(expected, resolved, ignoreCase: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
     public void WindowsCommandResolver_GetCurrentProcessPath_ReturnsExistingExecutable()
     {
         MethodInfo method = typeof(StdioClientTransport).Assembly
@@ -622,14 +648,15 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         string? processPath = null,
         string? currentDirectory = null,
         string? path = null,
-        string? pathExt = ".COM;.EXE;.BAT;.CMD")
+        string? pathExt = ".COM;.EXE;.BAT;.CMD",
+        string? noDefaultCurrentDirectoryInExePath = null)
     {
         MethodInfo method = typeof(StdioClientTransport).Assembly
             .GetType("ModelContextProtocol.Client.WindowsCommandResolver", throwOnError: true)!
             .GetMethod("Resolve", BindingFlags.Public | BindingFlags.Static)
             ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.Resolve via reflection.");
 
-        return (string?)method.Invoke(null, [command, processPath, currentDirectory ?? Environment.CurrentDirectory, path, pathExt]);
+        return (string?)method.Invoke(null, [command, processPath, currentDirectory ?? Environment.CurrentDirectory, path, pathExt, noDefaultCurrentDirectoryInExePath]);
     }
 
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]

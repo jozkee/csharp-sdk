@@ -123,7 +123,8 @@ public sealed partial class StdioClientTransport : IClientTransport
                     WindowsCommandResolver.GetCurrentProcessPath(),
                     startInfo.WorkingDirectory,
                     startInfo.Environment.TryGetValue("PATH", out string? pathValue) ? pathValue : null,
-                    startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null) is { } resolvedCommand)
+                    startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null,
+                    startInfo.Environment.TryGetValue("NoDefaultCurrentDirectoryInExePath", out string? noDefaultCurrentDirectoryValue) ? noDefaultCurrentDirectoryValue : null) is { } resolvedCommand)
             {
                 if (IsBatchFile(resolvedCommand))
                 {
