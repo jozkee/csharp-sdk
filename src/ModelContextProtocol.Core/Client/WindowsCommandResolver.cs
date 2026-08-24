@@ -65,6 +65,20 @@ internal static class WindowsCommandResolver
             return currentDirectoryResult;
         }
 
+        // Match the Win32 CreateProcess search order: the system directories are probed after the
+        // application and current directories but before PATH. Searching them here prevents a
+        // user-controlled PATH entry from shadowing a trusted system executable such as cmd.exe.
+        if (!containsDirectorySeparator)
+        {
+            foreach (string systemDirectory in GetSystemSearchDirectories())
+            {
+                if (FindFirstCandidate(Path.Combine(systemDirectory, command), probeExactName, extensions) is { } systemDirectoryResult)
+                {
+                    return systemDirectoryResult;
+                }
+            }
+        }
+
         if (!containsDirectorySeparator && path is not null)
         {
             HashSet<string> seenDirectories = new(StringComparer.OrdinalIgnoreCase);
@@ -119,4 +133,22 @@ internal static class WindowsCommandResolver
     // Matches Win32 NeedCurrentDirectoryForExePath: skip the current directory when the caller opted out.
     private static bool ShouldSearchCurrentDirectory() =>
         string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath"));
+
+    // The trusted directories CreateProcess searches after the application and current directories and
+    // before PATH: the system directory, the 16-bit system directory, and the Windows directory.
+    private static IEnumerable<string> GetSystemSearchDirectories()
+    {
+        string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        if (!string.IsNullOrEmpty(systemDirectory))
+        {
+            yield return systemDirectory;
+        }
+
+        string windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!string.IsNullOrEmpty(windowsDirectory))
+        {
+            yield return Path.Combine(windowsDirectory, "System");
+            yield return windowsDirectory;
+        }
+    }
 }

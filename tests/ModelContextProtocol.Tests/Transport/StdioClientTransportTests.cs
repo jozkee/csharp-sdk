@@ -277,12 +277,20 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         }
     }
 
-    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
-    public async Task BatchFileCommand_ResolvedThroughPath_LaunchesViaCmdAndRoundTripsArguments()
+    [Theory(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    [InlineData("hello from cmd")]
+    [InlineData("")]
+    [InlineData("value with \"quotes\"")]
+    [InlineData("percent %PATH% literal")]
+    [InlineData("cmd metacharacters & | < > ^ ( )")]
+    [InlineData("trailing backslash\\")]
+    [InlineData("mix \"q\" & %x% end\\")]
+    public async Task BatchFileCommand_ResolvedThroughPath_LaunchesViaCmdAndRoundTripsArguments(string argumentValue)
     {
         // A command that resolves to a .cmd/.bat shim (for example npx.cmd) cannot be launched directly
         // with UseShellExecute=false, because Windows CreateProcess does not execute batch files. The
-        // transport must route these through cmd.exe while still delivering arguments to the child.
+        // transport must route these through cmd.exe while still delivering arguments to the child
+        // unchanged and without allowing cmd metacharacters to inject additional commands.
         string testServerExe = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
         Assert.True(File.Exists(testServerExe), $"Expected TestServer.exe next to the test assembly at '{testServerExe}'.");
 
@@ -291,7 +299,8 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         try
         {
             // The shim forwards all of its arguments to TestServer.exe, mirroring how tools such as
-            // npx.cmd delegate to a real executable.
+            // npx.cmd delegate to a real executable. A canary command after the forwarding call would run
+            // if any argument broke out of quoting, so an injected argument would corrupt the round-trip.
             string shimBaseName = $"mcp-shim-{Guid.NewGuid():N}";
             string shimPath = Path.Combine(shimDirectory, shimBaseName + ".cmd");
             File.WriteAllText(shimPath, $"@echo off\r\n\"{testServerExe}\" %*\r\n");
@@ -302,7 +311,7 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
             {
                 Name = "TestServer",
                 Command = shimBaseName, // No extension: resolved to the .cmd shim via PATH/PATHEXT.
-                Arguments = ["--cli-arg=hello from cmd"],
+                Arguments = [$"--cli-arg={argumentValue}"],
                 EnvironmentVariables = new Dictionary<string, string?>
                 {
                     ["PATH"] = shimDirectory + Path.PathSeparator + existingPath,
@@ -315,7 +324,7 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
 
             var result = await client.CallToolAsync("echoCliArg", cancellationToken: TestContext.Current.CancellationToken);
             var content = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
-            Assert.Equal("hello from cmd", content.Text);
+            Assert.Equal(argumentValue, content.Text);
         }
         finally
         {
