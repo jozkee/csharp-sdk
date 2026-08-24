@@ -98,17 +98,10 @@ public sealed partial class StdioClientTransport : IClientTransport
                 }
             }
 
-            // Resolve the command with a which-style PATH/PATHEXT lookup, after the environment has been
-            // finalized so that PATH/PATHEXT match what the child process will see. Win32 CreateProcess
-            // performs no such search when UseShellExecute is false, so a bare command like "npx" (really
-            // "npx.cmd") would otherwise fail to launch.
-            if (WindowsCommandResolver.Resolve(
-                    command,
-                    WindowsCommandResolver.GetCurrentProcessPath(),
-                    startInfo.WorkingDirectory,
-                    startInfo.Environment.TryGetValue("PATH", out string? pathValue) ? pathValue : null,
-                    startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null,
-                    startInfo.Environment.TryGetValue("NoDefaultCurrentDirectoryInExePath", out string? noDefaultCurrentDirectoryValue) ? noDefaultCurrentDirectoryValue : null) is { } resolvedCommand)
+            // Resolve the command with a which-style PATH/PATHEXT lookup. Win32 CreateProcess performs no
+            // such search when UseShellExecute is false, so a bare command like "npx" (really "npx.cmd")
+            // would otherwise fail to launch.
+            if (WindowsCommandResolver.Resolve(command, startInfo.WorkingDirectory) is { } resolvedCommand)
             {
                 // Launch the resolved target directly. Windows CreateProcess still routes .cmd/.bat files
                 // through the command interpreter internally; that's expected.
@@ -119,31 +112,24 @@ public sealed partial class StdioClientTransport : IClientTransport
             // Windows re-invokes a .cmd/.bat script as cmd.exe /c "<command line>", so cmd re-parses the
             // arguments with its own grammar (the class of issue behind CVE-2024-24576). Any other
             // executable receives its arguments verbatim via normal argv quoting.
-            CommandLineEscaping escaping = GetCommandLineEscaping(startInfo.FileName);
+            bool escapeForCommandProcessor = RequiresCommandProcessorEscaping(startInfo.FileName);
 
             if (arguments is not null)
             {
-                if (escaping is CommandLineEscaping.BatchFile)
-                {
-                    startInfo.Arguments = BuildBatchFileArgumentString(arguments);
-                }
-                else
-                {
 #if NET
-                    foreach (string arg in arguments)
-                    {
-                        startInfo.ArgumentList.Add(escaping is CommandLineEscaping.CommandProcessor ? EscapeArgumentString(arg) : arg);
-                    }
-#else
-                    StringBuilder argsBuilder = new();
-                    foreach (string arg in arguments)
-                    {
-                        PasteArguments.AppendArgument(argsBuilder, escaping is CommandLineEscaping.CommandProcessor ? EscapeArgumentString(arg) : arg);
-                    }
-
-                    startInfo.Arguments = argsBuilder.ToString();
-#endif
+                foreach (string arg in arguments)
+                {
+                    startInfo.ArgumentList.Add(escapeForCommandProcessor ? EscapeArgumentString(arg) : arg);
                 }
+#else
+                StringBuilder argsBuilder = new();
+                foreach (string arg in arguments)
+                {
+                    PasteArguments.AppendArgument(argsBuilder, escapeForCommandProcessor ? EscapeArgumentString(arg) : arg);
+                }
+
+                startInfo.Arguments = argsBuilder.ToString();
+#endif
             }
 
             if (logger.IsEnabled(LogLevel.Trace))
@@ -310,124 +296,24 @@ public sealed partial class StdioClientTransport : IClientTransport
         }
     }
 
-    /// <summary>Describes how a command line must be escaped for the file being launched.</summary>
-    private enum CommandLineEscaping
-    {
-        /// <summary>Standard argv quoting; the arguments reach the child verbatim.</summary>
-        None,
-
-        /// <summary>The file is cmd.exe itself, which parses the arguments as a cmd command line.</summary>
-        CommandProcessor,
-
-        /// <summary>The file is a .cmd/.bat script, which Windows launches through cmd.exe.</summary>
-        BatchFile,
-    }
-
-    /// <summary>Gets how the command line must be escaped for the file at <paramref name="path"/>.</summary>
-    private static CommandLineEscaping GetCommandLineEscaping(string path)
+    /// <summary>
+    /// Gets whether the file at <paramref name="path"/> is interpreted by cmd, in which case the arguments
+    /// must be escaped for cmd's grammar. This is the case for cmd.exe itself and for a .cmd/.bat script,
+    /// which Windows launches by re-invoking it through cmd.exe.
+    /// </summary>
+    private static bool RequiresCommandProcessorEscaping(string path)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return CommandLineEscaping.None;
+            return false;
         }
 
         string fileName = Path.GetFileName(path);
         return
             fileName.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
-            fileName.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ? CommandLineEscaping.BatchFile :
+            fileName.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(fileName, "cmd.exe", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(fileName, "cmd", StringComparison.OrdinalIgnoreCase) ? CommandLineEscaping.CommandProcessor :
-            CommandLineEscaping.None;
-    }
-
-    /// <summary>
-    /// Builds the argument string for a <c>.cmd</c>/<c>.bat</c> script. Windows launches such a script by
-    /// re-invoking it as <c>cmd.exe /c "&lt;command line&gt;"</c>, and the script itself typically forwards its
-    /// arguments (<c>%*</c>), so every argument is quoted and escaped to survive cmd's grammar intact and
-    /// to prevent a metacharacter from injecting a second command. The construction mirrors the batch-file
-    /// mitigation shipped in the Rust standard library for CVE-2024-24576.
-    /// </summary>
-    private static string BuildBatchFileArgumentString(IList<string> arguments)
-    {
-        StringBuilder builder = new();
-
-        foreach (string argument in arguments)
-        {
-            if (argument.IndexOf('\r') >= 0 || argument.IndexOf('\n') >= 0)
-            {
-                throw new ArgumentException(
-                    "Arguments passed to a batch file (.cmd/.bat) may not contain carriage return or line feed characters.",
-                    nameof(arguments));
-            }
-
-            if (builder.Length != 0)
-            {
-                builder.Append(' ');
-            }
-
-            AppendBatchArgument(builder, argument);
-        }
-
-        return builder.ToString();
-    }
-
-    private static void AppendBatchArgument(StringBuilder builder, string argument)
-    {
-        // Quote empty arguments (otherwise they are dropped) and arguments ending in '\' (a trailing
-        // backslash would otherwise escape the closing quote).
-        bool quote = argument.Length == 0 || argument[argument.Length - 1] == '\\';
-
-        if (!quote)
-        {
-            // Assume every ASCII symbol must be quoted unless it is known to be safe, and quote control
-            // characters for good measure. An unquoted '\' is fine so long as the argument is not quoted.
-            const string Unquoted = "#$*+-./:?@\\_";
-            foreach (char c in argument)
-            {
-                if ((c < 128 && !(char.IsLetterOrDigit(c) || Unquoted.IndexOf(c) >= 0)) || char.IsControl(c))
-                {
-                    quote = true;
-                    break;
-                }
-            }
-        }
-
-        if (quote)
-        {
-            builder.Append('"');
-        }
-
-        int backslashes = 0;
-        foreach (char c in argument)
-        {
-            if (c == '\\')
-            {
-                backslashes++;
-            }
-            else
-            {
-                if (c == '"')
-                {
-                    // Emit enough backslashes to total 2n+1 before the internal quote, escaping it.
-                    builder.Append('\\', backslashes + 1);
-                }
-                else if (c == '%')
-                {
-                    // Prevent %VAR% expansion by inserting a zero-length substring of the built-in cd variable.
-                    builder.Append("%%cd:~,");
-                }
-
-                backslashes = 0;
-            }
-
-            builder.Append(c);
-        }
-
-        if (quote)
-        {
-            builder.Append('\\', backslashes);
-            builder.Append('"');
-        }
+            string.Equals(fileName, "cmd", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

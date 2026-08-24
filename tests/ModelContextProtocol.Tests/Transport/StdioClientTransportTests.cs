@@ -3,7 +3,6 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Tests.Utils;
 using System.IO.Pipelines;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -223,6 +222,11 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
 
         string shimDirectory = Path.Combine(Path.GetTempPath(), $"mcp-cmd-shim-{Guid.NewGuid():N}");
         Directory.CreateDirectory(shimDirectory);
+
+        // The command is resolved against the current process' environment, so the shim directory is
+        // prepended to this process' PATH rather than to the child's environment.
+        string? originalPath = Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("PATH", shimDirectory + Path.PathSeparator + originalPath);
         try
         {
             // The shim forwards all of its arguments to TestServer.exe, mirroring how tools such as
@@ -238,10 +242,6 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
                 Name = "TestServer",
                 Command = shimBaseName, // No extension: resolved to the .cmd shim via PATH/PATHEXT.
                 Arguments = ["--echo-cli-arg-and-exit", $"--cli-arg={cliArgumentValue}", $"x&echo.>{canaryFile}"],
-                EnvironmentVariables = new Dictionary<string, string?>
-                {
-                    ["PATH"] = shimDirectory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
-                },
                 StandardErrorLines = line =>
                 {
                     if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
@@ -263,6 +263,8 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         }
         finally
         {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+
             try
             {
                 Directory.Delete(shimDirectory, recursive: true);
@@ -272,46 +274,6 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
                 // Best-effort cleanup; the process handle may still be releasing.
             }
         }
-    }
-
-    [Theory]
-    // Simple arguments are passed through untouched.
-    [InlineData(new[] { "--flag" }, "--flag")]
-    [InlineData(new[] { "--flag", "value" }, "--flag value")]
-    // cmd metacharacters are quoted so that neither cmd's re-parse of the launch nor the script's own
-    // %* forwarding can turn them into a second command.
-    [InlineData(new[] { "a&b" }, "\"a&b\"")]
-    [InlineData(new[] { "x&echo.>file" }, "\"x&echo.>file\"")]
-    [InlineData(new[] { "a|b", "c^d" }, "\"a|b\" \"c^d\"")]
-    [InlineData(new[] { "with spaces" }, "\"with spaces\"")]
-    // Empty arguments must be quoted or they would be dropped.
-    [InlineData(new[] { "" }, "\"\"")]
-    // Environment variable references are neutralized: cmd expands them even inside quotes.
-    [InlineData(new[] { "%PATH%" }, "\"%%cd:~,%PATH%%cd:~,%\"")]
-    // Embedded quotes are backslash-escaped, and a trailing backslash must not escape the closing quote.
-    [InlineData(new[] { "a\"b" }, "\"a\\\"b\"")]
-    [InlineData(new[] { "C:\\dir\\" }, "\"C:\\dir\\\\\"")]
-    public void BuildBatchFileArgumentString_EscapesArgumentsForCmd(string[] arguments, string expected)
-    {
-        Assert.Equal(expected, InvokeBuildBatchFileArgumentString(arguments));
-    }
-
-    [Theory]
-    [InlineData("a\rb")]
-    [InlineData("a\nb")]
-    public void BuildBatchFileArgumentString_NewLineInArgument_Throws(string argument)
-    {
-        var exception = Assert.Throws<TargetInvocationException>(() => InvokeBuildBatchFileArgumentString([argument]));
-        Assert.IsType<ArgumentException>(exception.InnerException);
-    }
-
-    private static string InvokeBuildBatchFileArgumentString(IList<string> arguments)
-    {
-        MethodInfo method = typeof(StdioClientTransport)
-            .GetMethod("BuildBatchFileArgumentString", BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException("Could not find StdioClientTransport.BuildBatchFileArgumentString via reflection.");
-
-        return (string)method.Invoke(null, [arguments])!;
     }
 
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]

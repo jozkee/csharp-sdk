@@ -17,25 +17,38 @@ namespace ModelContextProtocol.Client;
 /// </remarks>
 internal static class WindowsCommandResolver
 {
-    /// <summary>Gets the full path of the current process executable, matching <c>Environment.ProcessPath</c>.</summary>
-    public static string? GetCurrentProcessPath()
-    {
+    /// <summary>Resolves <paramref name="command"/> to the full path of the file that would be launched, or <see langword="null"/> if no such file was found.</summary>
+    /// <param name="command">The command to resolve. It may be rooted, relative, or a bare name.</param>
+    /// <param name="currentDirectory">The working directory the child process will use. Relative <c>PATH</c> entries are resolved against it.</param>
+    /// <remarks>The search uses the current process' environment, just as <c>CreateProcess</c> and <c>execvp</c> do.</remarks>
+    public static string? Resolve(string command, string currentDirectory) =>
+        Resolve(
+            command,
 #if NET
-        return Environment.ProcessPath;
+            Environment.ProcessPath,
 #else
+            GetCurrentProcessPath(),
+#endif
+            currentDirectory,
+            Environment.GetEnvironmentVariable("PATH"),
+            Environment.GetEnvironmentVariable("PATHEXT"),
+            Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath"));
+
+#if !NET
+    private static string? GetCurrentProcessPath()
+    {
         using Process currentProcess = Process.GetCurrentProcess();
         return currentProcess.MainModule?.FileName;
-#endif
     }
+#endif
 
-    /// <summary>Resolves <paramref name="command"/> to the full path of the file that would be launched, or <see langword="null"/> if no such file was found.</summary>
     /// <param name="command">The command to resolve. It may be rooted, relative, or a bare name.</param>
     /// <param name="processPath">The path of the current process executable, whose directory is searched like <c>CreateProcess</c> searches the application directory.</param>
     /// <param name="currentDirectory">The working directory the child process will use. Relative <paramref name="path"/> entries are resolved against it.</param>
-    /// <param name="path">The child process' <c>PATH</c> value.</param>
-    /// <param name="pathExt">The child process' <c>PATHEXT</c> value. It is <see langword="null"/> or empty on Unix.</param>
-    /// <param name="noDefaultCurrentDirectoryInExePath">The child process' <c>NoDefaultCurrentDirectoryInExePath</c> value. When set, the current directory is not searched.</param>
-    public static string? Resolve(
+    /// <param name="path">The <c>PATH</c> value.</param>
+    /// <param name="pathExt">The <c>PATHEXT</c> value. It is <see langword="null"/> or empty on Unix.</param>
+    /// <param name="noDefaultCurrentDirectoryInExePath">The <c>NoDefaultCurrentDirectoryInExePath</c> value. When set, the current directory is not searched.</param>
+    private static string? Resolve(
         string command,
         string? processPath,
         string currentDirectory,
@@ -43,10 +56,10 @@ internal static class WindowsCommandResolver
         string? pathExt,
         string? noDefaultCurrentDirectoryInExePath)
     {
-        // PATHEXT is a Windows concept and is always semicolon-separated. It is normally undefined
+        // PATHEXT is a Windows concept and is separated the same way as PATH. It is normally undefined
         // elsewhere, in which case no extensions are probed and only the exact name is used.
         string[] extensions = (pathExt ?? string.Empty)
-            .Split([';'], StringSplitOptions.RemoveEmptyEntries)
+            .Split([Path.PathSeparator], StringSplitOptions.RemoveEmptyEntries)
             .Select(static ext => ext.Trim())
             .Where(static ext => ext.Length != 0)
             .Select(static ext => ext[0] == '.' ? ext : "." + ext)
@@ -88,20 +101,6 @@ internal static class WindowsCommandResolver
             FindFirstCandidate(Path.Combine(currentDirectory, command), probeExactName, extensions) is { } currentDirectoryResult)
         {
             return currentDirectoryResult;
-        }
-
-        // Match the Win32 CreateProcess search order: the system directories are probed after the
-        // application and current directories but before PATH. Searching them here prevents a
-        // user-controlled PATH entry from shadowing a trusted system executable such as cmd.exe.
-        if (!containsDirectorySeparator)
-        {
-            foreach (string systemDirectory in GetSystemSearchDirectories())
-            {
-                if (FindFirstCandidate(Path.Combine(systemDirectory, command), probeExactName, extensions) is { } systemDirectoryResult)
-                {
-                    return systemDirectoryResult;
-                }
-            }
         }
 
         if (!containsDirectorySeparator && path is not null)
@@ -176,28 +175,4 @@ internal static class WindowsCommandResolver
     // The value comes from the finalized child environment so it reflects what the launched process sees.
     private static bool ShouldSearchCurrentDirectory(string? noDefaultCurrentDirectoryInExePath) =>
         string.IsNullOrEmpty(noDefaultCurrentDirectoryInExePath);
-
-    // The trusted directories CreateProcess searches after the application and current directories and
-    // before PATH: the system directory, the 16-bit system directory, and the Windows directory.
-    // There is no equivalent on Unix, where these all resolve to empty and nothing is searched.
-    private static IEnumerable<string> GetSystemSearchDirectories()
-    {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            yield break;
-        }
-
-        string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        if (!string.IsNullOrEmpty(systemDirectory))
-        {
-            yield return systemDirectory;
-        }
-
-        string windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        if (!string.IsNullOrEmpty(windowsDirectory))
-        {
-            yield return Path.Combine(windowsDirectory, "System");
-            yield return windowsDirectory;
-        }
-    }
 }

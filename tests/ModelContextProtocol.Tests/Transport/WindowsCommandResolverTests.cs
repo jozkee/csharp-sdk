@@ -12,10 +12,11 @@ namespace ModelContextProtocol.Tests.Transport;
 public class WindowsCommandResolverTests(ITestOutputHelper testOutputHelper) : LoggedTest(testOutputHelper)
 {
     /// <summary>
-    /// A typical Windows PATHEXT value. The resolver is data-driven, so it can be exercised on any platform;
-    /// the entries are lowercase so that probing also matches on case-sensitive file systems.
+    /// A typical Windows PATHEXT value, separated the way the current platform separates path lists. The
+    /// resolver is data-driven, so it can be exercised on any platform; the entries are lowercase so that
+    /// probing also matches on case-sensitive file systems.
     /// </summary>
-    private const string WindowsPathExt = ".com;.exe;.bat;.cmd";
+    private static readonly string WindowsPathExt = string.Join(Path.PathSeparator, [".com", ".exe", ".bat", ".cmd"]);
 
     /// <summary>Sentinel for "use whatever PATHEXT this platform would supply", so tests can also pass an explicit <see langword="null"/>.</summary>
     private const string PlatformPathExt = "\u0000platform";
@@ -137,7 +138,8 @@ public class WindowsCommandResolverTests(ITestOutputHelper testOutputHelper) : L
         string expected = CreateExecutableFile(Path.Combine(pathDirectory, command + ".cmd"));
 
         // Entries may be missing the leading dot, be padded, or repeat with different casing.
-        AssertSamePath(expected, Resolve(command, path: pathDirectory, pathExt: " cmd ; .cmd ;;.CMD"));
+        char separator = Path.PathSeparator;
+        AssertSamePath(expected, Resolve(command, path: pathDirectory, pathExt: $" cmd {separator} .cmd {separator}{separator}.CMD"));
     }
 
     [Fact]
@@ -188,16 +190,35 @@ public class WindowsCommandResolverTests(ITestOutputHelper testOutputHelper) : L
     }
 
     [Fact]
-    public void GetCurrentProcessPath_ReturnsExistingExecutable()
+    public void Resolve_UsesCurrentProcessEnvironment()
     {
-        MethodInfo method = ResolverType
-            .GetMethod("GetCurrentProcessPath", BindingFlags.Public | BindingFlags.Static)
-            ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.GetCurrentProcessPath via reflection.");
+        // The public overload takes only the command and working directory: PATH, PATHEXT, and the
+        // process path all come from the current process' environment.
+        using TempDirectory root = new();
+        string pathDirectory = root.CreateSubdirectory("path");
+        string command = $"probe-{Guid.NewGuid():N}";
+        string expected = CreateExecutableFile(Path.Combine(pathDirectory, command + ExecutableExtension));
 
-        string? processPath = (string?)method.Invoke(null, null);
+        string? originalPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            Assert.Null(ResolveFromCurrentEnvironment(command, root.Path));
 
-        Assert.False(string.IsNullOrEmpty(processPath));
-        Assert.True(File.Exists(processPath), $"Process path does not exist: {processPath}");
+            Environment.SetEnvironmentVariable("PATH", pathDirectory + Path.PathSeparator + originalPath);
+            AssertSamePath(expected, ResolveFromCurrentEnvironment(command, root.Path));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+        }
+    }
+
+    private static string? ResolveFromCurrentEnvironment(string command, string currentDirectory)
+    {
+        MethodInfo method = ResolverType.GetMethod("Resolve", BindingFlags.Public | BindingFlags.Static, binder: null, [typeof(string), typeof(string)], modifiers: null)
+            ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.Resolve via reflection.");
+
+        return (string?)method.Invoke(null, [command, currentDirectory]);
     }
 
     private static string ExecutableExtension => PlatformDetection.IsWindows ? ".exe" : "";
@@ -218,7 +239,12 @@ public class WindowsCommandResolverTests(ITestOutputHelper testOutputHelper) : L
             pathExt = PlatformDetection.IsWindows ? WindowsPathExt : null;
         }
 
-        MethodInfo method = ResolverType.GetMethod("Resolve", BindingFlags.Public | BindingFlags.Static)
+        MethodInfo method = ResolverType.GetMethod(
+            "Resolve",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string)],
+            modifiers: null)
             ?? throw new InvalidOperationException("Could not find WindowsCommandResolver.Resolve via reflection.");
 
         return (string?)method.Invoke(null, [command, processPath, currentDirectory ?? Environment.CurrentDirectory, path, pathExt, noDefaultCurrentDirectoryInExePath]);
