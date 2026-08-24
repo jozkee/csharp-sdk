@@ -278,6 +278,59 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
     }
 
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public async Task BatchFileCommand_ResolvedThroughPath_LaunchesViaCmdAndRoundTripsArguments()
+    {
+        // A command that resolves to a .cmd/.bat shim (for example npx.cmd) cannot be launched directly
+        // with UseShellExecute=false, because Windows CreateProcess does not execute batch files. The
+        // transport must route these through cmd.exe while still delivering arguments to the child.
+        string testServerExe = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        Assert.True(File.Exists(testServerExe), $"Expected TestServer.exe next to the test assembly at '{testServerExe}'.");
+
+        string shimDirectory = Path.Combine(Path.GetTempPath(), $"mcp-cmd-shim-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(shimDirectory);
+        try
+        {
+            // The shim forwards all of its arguments to TestServer.exe, mirroring how tools such as
+            // npx.cmd delegate to a real executable.
+            string shimBaseName = $"mcp-shim-{Guid.NewGuid():N}";
+            string shimPath = Path.Combine(shimDirectory, shimBaseName + ".cmd");
+            File.WriteAllText(shimPath, $"@echo off\r\n\"{testServerExe}\" %*\r\n");
+
+            string existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+
+            StdioClientTransportOptions options = new()
+            {
+                Name = "TestServer",
+                Command = shimBaseName, // No extension: resolved to the .cmd shim via PATH/PATHEXT.
+                Arguments = ["--cli-arg=hello from cmd"],
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["PATH"] = shimDirectory + Path.PathSeparator + existingPath,
+                },
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+
+            await using var client = await McpClient.CreateAsync(transport, loggerFactory: LoggerFactory, cancellationToken: TestContext.Current.CancellationToken);
+
+            var result = await client.CallToolAsync("echoCliArg", cancellationToken: TestContext.Current.CancellationToken);
+            var content = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+            Assert.Equal("hello from cmd", content.Text);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(shimDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
     public void ResolveWindowsCommand_CommandWithExtension_ResolvesToDoubleExtensionShim()
     {
         // A command that already carries an extension (e.g. "foo.exe") must still be resolved to a

@@ -125,7 +125,22 @@ public sealed partial class StdioClientTransport : IClientTransport
                     startInfo.Environment.TryGetValue("PATH", out string? pathValue) ? pathValue : null,
                     startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null) is { } resolvedCommand)
             {
-                startInfo.FileName = resolvedCommand;
+                if (IsBatchFile(resolvedCommand))
+                {
+                    // A resolved .cmd/.bat shim (for example npx.cmd) is a script, not an executable, so
+                    // Windows CreateProcess cannot launch it directly while UseShellExecute is false. Route it
+                    // through cmd.exe, rebuilding the command line with batch-safe quoting so arguments are
+                    // preserved and cannot inject additional commands.
+#if NET
+                    startInfo.ArgumentList.Clear();
+#endif
+                    startInfo.Arguments = BuildBatchFileCommandLine(resolvedCommand, arguments);
+                    startInfo.FileName = GetComSpec();
+                }
+                else
+                {
+                    startInfo.FileName = resolvedCommand;
+                }
             }
 
             if (logger.IsEnabled(LogLevel.Trace))
@@ -289,6 +304,123 @@ public sealed partial class StdioClientTransport : IClientTransport
         catch
         {
             return true;
+        }
+    }
+
+    /// <summary>Gets whether the resolved command is a batch script that cmd.exe must interpret.</summary>
+    private static bool IsBatchFile(string path) =>
+        path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Gets the path to the command interpreter used to launch batch files.</summary>
+    private static string GetComSpec()
+    {
+        string? comSpec = Environment.GetEnvironmentVariable("ComSpec");
+        if (!string.IsNullOrEmpty(comSpec))
+        {
+            return comSpec!;
+        }
+
+        string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        return string.IsNullOrEmpty(systemDirectory) ? "cmd.exe" : Path.Combine(systemDirectory, "cmd.exe");
+    }
+
+    /// <summary>
+    /// Builds a verbatim cmd.exe command line that launches a <c>.cmd</c>/<c>.bat</c> script with the
+    /// supplied arguments. The script name and every argument are wrapped in an outer quote pair and
+    /// escaped so that the batch file receives the arguments intact and cannot inject further commands.
+    /// The construction mirrors the batch-file mitigation shipped in the .NET/Rust standard libraries
+    /// for CVE-2024-24576.
+    /// </summary>
+    private static string BuildBatchFileCommandLine(string batchFilePath, IList<string>? arguments)
+    {
+        StringBuilder builder = new();
+
+        // /e:ON enables command extensions (required by the '%' escaping below), /v:OFF keeps '!' literal,
+        // and /d skips AutoRun commands. The command is wrapped in an extra pair of quotes that cmd.exe
+        // strips before executing the enclosed script.
+        builder.Append("/e:ON /v:OFF /d /c \"");
+
+        builder.Append('"').Append(batchFilePath).Append('"');
+
+        if (arguments is not null)
+        {
+            foreach (string argument in arguments)
+            {
+                if (argument.IndexOf('\r') >= 0 || argument.IndexOf('\n') >= 0)
+                {
+                    throw new ArgumentException(
+                        "Arguments passed to a batch file (.cmd/.bat) may not contain carriage return or line feed characters.",
+                        nameof(arguments));
+                }
+
+                builder.Append(' ');
+                AppendBatchArgument(builder, argument);
+            }
+        }
+
+        builder.Append('"');
+        return builder.ToString();
+    }
+
+    private static void AppendBatchArgument(StringBuilder builder, string argument)
+    {
+        // Quote empty arguments (otherwise they are dropped) and arguments ending in '\' (a trailing
+        // backslash would otherwise escape the closing quote).
+        bool quote = argument.Length == 0 || argument[argument.Length - 1] == '\\';
+
+        if (!quote)
+        {
+            // Assume every ASCII symbol must be quoted unless it is known to be safe, and quote control
+            // characters for good measure. An unquoted '\' is fine so long as the argument is not quoted.
+            const string Unquoted = "#$*+-./:?@\\_";
+            foreach (char c in argument)
+            {
+                bool asciiNeedsQuotes = c < 128 && !(char.IsLetterOrDigit(c) || Unquoted.IndexOf(c) >= 0);
+                if (asciiNeedsQuotes || char.IsControl(c))
+                {
+                    quote = true;
+                    break;
+                }
+            }
+        }
+
+        if (quote)
+        {
+            builder.Append('"');
+        }
+
+        int backslashes = 0;
+        foreach (char c in argument)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+            }
+            else
+            {
+                if (c == '"')
+                {
+                    // Emit enough backslashes to total 2n before the internal quote, then double the quote.
+                    builder.Append('\\', backslashes);
+                    builder.Append('"');
+                }
+                else if (c == '%' || c == '\r')
+                {
+                    // Prevent %VAR% expansion by inserting a zero-length substring of the built-in cd variable.
+                    builder.Append("%%cd:~,");
+                }
+
+                backslashes = 0;
+            }
+
+            builder.Append(c);
+        }
+
+        if (quote)
+        {
+            builder.Append('\\', backslashes);
+            builder.Append('"');
         }
     }
 
