@@ -94,6 +94,13 @@ public sealed class StdioClientTransportOptions
     /// <summary>
     /// Gets or sets the command to execute to start the server process.
     /// </summary>
+    /// <remarks>
+    /// The command is located with a <c>which</c>-style lookup before the process is started: a rooted path
+    /// is used as-is, and a bare name such as <c>npx</c> is searched for in the directory of the current
+    /// process, the working directory, and each <c>PATH</c> entry, on Windows also appending each
+    /// <c>PATHEXT</c> extension (so <c>npx</c> resolves to <c>npx.cmd</c>). The resolved file is then
+    /// launched directly.
+    /// </remarks>
     /// <exception cref="ArgumentException">The value is <see langword="null"/>, empty, or composed entirely of whitespace.</exception>
     public required string Command
     {

@@ -3,6 +3,7 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Tests.Utils;
 using System.IO.Pipelines;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -12,6 +13,8 @@ namespace ModelContextProtocol.Tests.Transport;
 public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : LoggedTest(testOutputHelper)
 {
     public static bool IsStdErrCallbackSupported => !PlatformDetection.IsMonoRuntime;
+
+    public static bool IsWindows => PlatformDetection.IsWindows;
 
     [Fact]
     public async Task ConnectAsync_DoesNotLogEnvironmentVariablesAtTrace()
@@ -198,6 +201,148 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
                 TestContext.Current.CancellationToken));
         var completionDetails = Assert.IsType<StdioClientCompletionDetails>(exception.Details);
         Assert.Equal(0, completionDetails.ExitCode);
+    }
+
+    [Theory(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    [InlineData("hello from cmd")]
+    [InlineData("")]
+    [InlineData("a&b")]
+    [InlineData("cmd metacharacters & | < > ^")]
+    [InlineData("value with \"quotes\"")]
+    public async Task BatchFileCommand_ResolvedThroughPath_RoundTripsArguments(string cliArgumentValue)
+    {
+        // A bare command that resolves to a .cmd shim (for example npx.cmd) must launch without the
+        // caller specifying cmd.exe, and its arguments must arrive at the child intact. Windows
+        // re-invokes such a script through cmd.exe, so cmd metacharacters must not inject a second
+        // command.
+        const string OutputPrefix = "CLI_ARG:";
+        var capturedArgument = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        string testServerExecutable = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        Assert.True(File.Exists(testServerExecutable), $"Expected TestServer.exe next to the test assembly at '{testServerExecutable}'.");
+
+        string shimDirectory = Path.Combine(Path.GetTempPath(), $"mcp-cmd-shim-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(shimDirectory);
+        try
+        {
+            // The shim forwards all of its arguments to TestServer.exe, mirroring how tools such as
+            // npx.cmd delegate to a real executable.
+            string shimBaseName = $"mcp-shim-{Guid.NewGuid():N}";
+            File.WriteAllText(Path.Combine(shimDirectory, shimBaseName + ".cmd"), $"@echo off\r\n\"{testServerExecutable}\" %*\r\n");
+
+            // A file that an injected command would create; it must not exist after a successful launch.
+            string canaryFile = Path.Combine(shimDirectory, "canary.txt");
+
+            StdioClientTransportOptions options = new()
+            {
+                Name = "TestServer",
+                Command = shimBaseName, // No extension: resolved to the .cmd shim via PATH/PATHEXT.
+                Arguments = ["--echo-cli-arg-and-exit", $"--cli-arg={cliArgumentValue}", $"x&echo.>{canaryFile}"],
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["PATH"] = shimDirectory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
+                },
+                StandardErrorLines = line =>
+                {
+                    if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
+                    {
+                        capturedArgument.TrySetResult(line[OutputPrefix.Length..]);
+                    }
+                },
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+            await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+            string serializedArgument = await capturedArgument.Task.WaitAsync(
+                TestConstants.DefaultTimeout,
+                TestContext.Current.CancellationToken);
+            JsonElement parsedArgument = JsonElement.Parse(serializedArgument);
+            Assert.Equal(cliArgumentValue, parsedArgument.GetString());
+            Assert.False(File.Exists(canaryFile), "A cmd metacharacter in an argument injected a second command.");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(shimDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup; the process handle may still be releasing.
+            }
+        }
+    }
+
+    [Theory]
+    // Simple arguments are passed through untouched.
+    [InlineData(new[] { "--flag" }, "--flag")]
+    [InlineData(new[] { "--flag", "value" }, "--flag value")]
+    // cmd metacharacters are quoted so that neither cmd's re-parse of the launch nor the script's own
+    // %* forwarding can turn them into a second command.
+    [InlineData(new[] { "a&b" }, "\"a&b\"")]
+    [InlineData(new[] { "x&echo.>file" }, "\"x&echo.>file\"")]
+    [InlineData(new[] { "a|b", "c^d" }, "\"a|b\" \"c^d\"")]
+    [InlineData(new[] { "with spaces" }, "\"with spaces\"")]
+    // Empty arguments must be quoted or they would be dropped.
+    [InlineData(new[] { "" }, "\"\"")]
+    // Environment variable references are neutralized: cmd expands them even inside quotes.
+    [InlineData(new[] { "%PATH%" }, "\"%%cd:~,%PATH%%cd:~,%\"")]
+    // Embedded quotes are backslash-escaped, and a trailing backslash must not escape the closing quote.
+    [InlineData(new[] { "a\"b" }, "\"a\\\"b\"")]
+    [InlineData(new[] { "C:\\dir\\" }, "\"C:\\dir\\\\\"")]
+    public void BuildBatchFileArgumentString_EscapesArgumentsForCmd(string[] arguments, string expected)
+    {
+        Assert.Equal(expected, InvokeBuildBatchFileArgumentString(arguments));
+    }
+
+    [Theory]
+    [InlineData("a\rb")]
+    [InlineData("a\nb")]
+    public void BuildBatchFileArgumentString_NewLineInArgument_Throws(string argument)
+    {
+        var exception = Assert.Throws<TargetInvocationException>(() => InvokeBuildBatchFileArgumentString([argument]));
+        Assert.IsType<ArgumentException>(exception.InnerException);
+    }
+
+    private static string InvokeBuildBatchFileArgumentString(IList<string> arguments)
+    {
+        MethodInfo method = typeof(StdioClientTransport)
+            .GetMethod("BuildBatchFileArgumentString", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Could not find StdioClientTransport.BuildBatchFileArgumentString via reflection.");
+
+        return (string)method.Invoke(null, [arguments])!;
+    }
+
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public async Task BareExecutableName_ResolvedAndLaunchedWithArgumentsVerbatim()
+    {
+        // A bare native executable name is resolved via the process directory / PATH and launched
+        // directly, receiving its arguments verbatim.
+        var capturedArgument = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        const string OutputPrefix = "CLI_ARG:";
+
+        StdioClientTransportOptions options = new()
+        {
+            Name = "TestServer",
+            Command = "TestServer.exe", // Bare name: resolved next to the test host executable.
+            Arguments = ["--echo-cli-arg-and-exit", "--cli-arg=direct launch & no cmd"],
+            StandardErrorLines = line =>
+            {
+                if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
+                {
+                    capturedArgument.TrySetResult(line[OutputPrefix.Length..]);
+                }
+            },
+        };
+
+        var transport = new StdioClientTransport(options, LoggerFactory);
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        string serializedArgument = await capturedArgument.Task.WaitAsync(
+            TestConstants.DefaultTimeout,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("direct launch & no cmd", JsonElement.Parse(serializedArgument).GetString());
     }
 
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]
