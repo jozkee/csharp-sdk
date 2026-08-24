@@ -121,7 +121,7 @@ public sealed partial class StdioClientTransport : IClientTransport
                 WindowsCommandResolver.Resolve(
                     startInfo.FileName,
                     WindowsCommandResolver.GetCurrentProcessPath(),
-                    Environment.CurrentDirectory,
+                    startInfo.WorkingDirectory,
                     startInfo.Environment.TryGetValue("PATH", out string? pathValue) ? pathValue : null,
                     startInfo.Environment.TryGetValue("PATHEXT", out string? pathExtValue) ? pathExtValue : null) is { } resolvedCommand)
             {
@@ -135,7 +135,7 @@ public sealed partial class StdioClientTransport : IClientTransport
                     startInfo.ArgumentList.Clear();
 #endif
                     startInfo.Arguments = BuildBatchFileCommandLine(resolvedCommand, arguments);
-                    startInfo.FileName = GetComSpec();
+                    startInfo.FileName = GetSystemCommandProcessor();
                 }
                 else
                 {
@@ -312,15 +312,12 @@ public sealed partial class StdioClientTransport : IClientTransport
         path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Gets the path to the command interpreter used to launch batch files.</summary>
-    private static string GetComSpec()
+    /// <summary>Gets the path to the system copy of cmd.exe used to launch batch files.</summary>
+    private static string GetSystemCommandProcessor()
     {
-        string? comSpec = Environment.GetEnvironmentVariable("ComSpec");
-        if (!string.IsNullOrEmpty(comSpec))
-        {
-            return comSpec!;
-        }
-
+        // Use the system copy of cmd.exe rather than the overridable ComSpec environment variable: this
+        // launch path requires cmd.exe's /d /c syntax, and an attacker-controlled ComSpec could otherwise
+        // redirect batch-file execution to a different interpreter, bypassing the resolver's hardening.
         string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
         return string.IsNullOrEmpty(systemDirectory) ? "cmd.exe" : Path.Combine(systemDirectory, "cmd.exe");
     }
