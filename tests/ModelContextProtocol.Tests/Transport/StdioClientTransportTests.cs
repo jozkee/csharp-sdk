@@ -308,6 +308,74 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         Assert.Equal("direct launch & no cmd", JsonElement.Parse(serializedArgument).GetString());
     }
 
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
+    public async Task CommandPathWithSpaces_LaunchedWithArgumentsVerbatim()
+    {
+        // Regression test for https://github.com/modelcontextprotocol/csharp-sdk/issues/1601: when the
+        // Command is an absolute path that contains spaces and Arguments is non-empty, the server must still
+        // launch and receive its arguments intact. Previously the Windows cmd.exe wrapping mangled such a
+        // command line. Copying the apphost to a spaced file name next to its managed TestServer.dll (which
+        // the apphost loads by its embedded name, independent of the exe's file name) yields such a path.
+        const string OutputPrefix = "CLI_ARG:";
+        var capturedArgument = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        string testServerExecutable = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        Assert.True(File.Exists(testServerExecutable), $"Expected TestServer.exe next to the test assembly at '{testServerExecutable}'.");
+
+        string spacedExecutable = Path.Combine(AppContext.BaseDirectory, $"TestServer with spaces {Guid.NewGuid():N}.exe");
+        File.Copy(testServerExecutable, spacedExecutable);
+
+        // On .NET Framework the managed host resolves binding redirects from "<exe>.config", so copy it to
+        // the matching name. It is not needed by the .NET (Core) apphost, which uses the embedded app name.
+        string spacedConfig = spacedExecutable + ".config";
+        bool copiedConfig = false;
+        if (File.Exists(testServerExecutable + ".config"))
+        {
+            File.Copy(testServerExecutable + ".config", spacedConfig);
+            copiedConfig = true;
+        }
+
+        try
+        {
+            StdioClientTransportOptions options = new()
+            {
+                Name = "TestServer",
+                Command = spacedExecutable, // Absolute path containing spaces.
+                Arguments = ["--echo-cli-arg-and-exit", "--cli-arg=spaced path & no cmd"],
+                StandardErrorLines = line =>
+                {
+                    if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
+                    {
+                        capturedArgument.TrySetResult(line[OutputPrefix.Length..]);
+                    }
+                },
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+            await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+            string serializedArgument = await capturedArgument.Task.WaitAsync(
+                TestConstants.DefaultTimeout,
+                TestContext.Current.CancellationToken);
+            Assert.Equal("spaced path & no cmd", JsonElement.Parse(serializedArgument).GetString());
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(spacedExecutable);
+                if (copiedConfig)
+                {
+                    File.Delete(spacedConfig);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup; the process handle may still be releasing.
+            }
+        }
+    }
+
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]
     public async Task InheritEnvironmentVariables_DefaultTrue_ChildSeesParentEnvVars()
     {
