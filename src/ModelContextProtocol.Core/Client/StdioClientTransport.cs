@@ -112,25 +112,44 @@ public sealed partial class StdioClientTransport : IClientTransport
 
             if (arguments is not null)
             {
-                // Escaping is cmd-specific and only applied when the launched file is interpreted by cmd:
-                // Windows re-invokes a .cmd/.bat script as cmd.exe /c "<command line>", so cmd re-parses the
-                // arguments with its own grammar (the class of issue behind CVE-2024-24576). Any other
-                // executable receives its arguments verbatim via normal argv quoting.
-                bool escapeForCommandProcessor = RequiresCommandProcessorEscaping(startInfo.FileName);
-#if NET
-                foreach (string arg in arguments)
+                // Argument quoting is cmd-specific when the launched file is interpreted by cmd: Windows
+                // re-invokes a .cmd/.bat script as cmd.exe /c "<command line>", and the script's own %*/%n
+                // expansion re-parses the arguments a second time (the class of issue behind CVE-2024-24576).
+                // For those targets the command line is built by hand so each argument is quoted in a way
+                // that survives both cmd parses; any other executable receives its arguments verbatim via
+                // normal argv quoting.
+                if (RequiresCommandProcessorEscaping(startInfo.FileName))
                 {
-                    startInfo.ArgumentList.Add(escapeForCommandProcessor ? EscapeArgumentString(arg) : arg);
-                }
-#else
-                StringBuilder argsBuilder = new();
-                foreach (string arg in arguments)
-                {
-                    PasteArguments.AppendArgument(argsBuilder, escapeForCommandProcessor ? EscapeArgumentString(arg) : arg);
-                }
+                    StringBuilder argsBuilder = new();
+                    foreach (string arg in arguments)
+                    {
+                        if (argsBuilder.Length != 0)
+                        {
+                            argsBuilder.Append(' ');
+                        }
 
-                startInfo.Arguments = argsBuilder.ToString();
+                        AppendCommandProcessorArgument(argsBuilder, arg);
+                    }
+
+                    startInfo.Arguments = argsBuilder.ToString();
+                }
+                else
+                {
+#if NET
+                    foreach (string arg in arguments)
+                    {
+                        startInfo.ArgumentList.Add(arg);
+                    }
+#else
+                    StringBuilder argsBuilder = new();
+                    foreach (string arg in arguments)
+                    {
+                        PasteArguments.AppendArgument(argsBuilder, arg);
+                    }
+
+                    startInfo.Arguments = argsBuilder.ToString();
 #endif
+                }
             }
 
             if (logger.IsEnabled(LogLevel.Trace))
@@ -318,28 +337,42 @@ public sealed partial class StdioClientTransport : IClientTransport
     }
 
     /// <summary>
-    /// Escapes cmd's metacharacters in an argument destined for cmd.exe itself. Only arguments without
-    /// whitespace are escaped; arguments with whitespace are quoted by the standard argv quoting.
+    /// Appends <paramref name="argument"/> to <paramref name="builder"/>, quoting it for cmd when needed.
     /// </summary>
-    private static string EscapeArgumentString(string argument) =>
-        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !ContainsWhitespaceRegex.IsMatch(argument) ?
-        WindowsCliSpecialArgumentsRegex.Replace(argument, static match => "^" + match.Value) :
-        argument;
+    /// <remarks>
+    /// A .cmd/.bat script (and cmd.exe itself) is parsed by cmd, and the script's own <c>%*</c>/<c>%n</c>
+    /// expansion re-parses the arguments a second time. Caret-escaping only survives a single parse, so an
+    /// argument that contains whitespace or a cmd metacharacter (or is empty) is instead wrapped in double
+    /// quotes, which cmd and the child's argv parser both treat literally across both parses. Embedded quotes
+    /// are doubled and a trailing backslash run is doubled so it cannot escape the closing quote. This delivers
+    /// the argument to the child intact while preventing cmd metacharacter injection (CVE-2024-24576).
+    /// </remarks>
+    private static void AppendCommandProcessorArgument(StringBuilder builder, string argument)
+    {
+        if (argument.Length != 0 && !RequiresCommandProcessorQuoting(argument))
+        {
+            builder.Append(argument);
+            return;
+        }
 
-    private const string WindowsCliSpecialArgumentsRegexString = "[&^><|]";
+        string escaped = argument.Replace("\"", "\"\"");
+        int trailingBackslashes = escaped.Length - escaped.TrimEnd('\\').Length;
+        builder.Append('"').Append(escaped).Append('\\', trailingBackslashes).Append('"');
+    }
 
-#if NET
-    private static Regex WindowsCliSpecialArgumentsRegex => GetWindowsCliSpecialArgumentsRegex();
-    private static Regex ContainsWhitespaceRegex => GetContainsWhitespaceRegex();
+    /// <summary>Gets whether <paramref name="argument"/> must be quoted so cmd does not interpret it.</summary>
+    private static bool RequiresCommandProcessorQuoting(string argument)
+    {
+        foreach (char c in argument)
+        {
+            if (char.IsWhiteSpace(c) || c is '&' or '|' or '<' or '>' or '^' or '(' or ')' or '"')
+            {
+                return true;
+            }
+        }
 
-    [GeneratedRegex(WindowsCliSpecialArgumentsRegexString, RegexOptions.CultureInvariant)]
-    private static partial Regex GetWindowsCliSpecialArgumentsRegex();
-    [GeneratedRegex(@"\s", RegexOptions.CultureInvariant)]
-    private static partial Regex GetContainsWhitespaceRegex();
-#else
-    private static Regex WindowsCliSpecialArgumentsRegex { get; } = new(WindowsCliSpecialArgumentsRegexString, RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static Regex ContainsWhitespaceRegex { get; } = new(@"\s", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-#endif
+        return false;
+    }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "{EndpointName} connecting.")]
     private static partial void LogTransportConnecting(ILogger logger, string endpointName);
