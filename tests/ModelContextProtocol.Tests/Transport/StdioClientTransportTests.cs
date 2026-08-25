@@ -279,15 +279,16 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Windows-only test.")]
     public async Task BareExecutableName_ResolvedAndLaunchedWithArgumentsVerbatim()
     {
-        // A bare native executable name is resolved via the process directory / PATH and launched
-        // directly, receiving its arguments verbatim.
+        // A bare native executable (.exe) is launched directly, receiving its arguments verbatim. The
+        // PATHEXT resolver does not resolve it (it lives next to the test host, not in the working
+        // directory or PATH), so CreateProcess locates it via its own application-directory search.
         var capturedArgument = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         const string OutputPrefix = "CLI_ARG:";
 
         StdioClientTransportOptions options = new()
         {
             Name = "TestServer",
-            Command = "TestServer.exe", // Bare name: resolved next to the test host executable.
+            Command = "TestServer.exe", // Bare name; found by CreateProcess next to the test host executable.
             Arguments = ["--echo-cli-arg-and-exit", "--cli-arg=direct launch & no cmd"],
             StandardErrorLines = line =>
             {
