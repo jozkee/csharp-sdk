@@ -109,14 +109,13 @@ public sealed partial class StdioClientTransport : IClientTransport
                 startInfo.FileName = resolvedCommand;
             }
 
-            // Escaping is cmd-specific and only applied when the launched file is interpreted by cmd:
-            // Windows re-invokes a .cmd/.bat script as cmd.exe /c "<command line>", so cmd re-parses the
-            // arguments with its own grammar (the class of issue behind CVE-2024-24576). Any other
-            // executable receives its arguments verbatim via normal argv quoting.
-            bool escapeForCommandProcessor = RequiresCommandProcessorEscaping(startInfo.FileName);
-
             if (arguments is not null)
             {
+                // Escaping is cmd-specific and only applied when the launched file is interpreted by cmd:
+                // Windows re-invokes a .cmd/.bat script as cmd.exe /c "<command line>", so cmd re-parses the
+                // arguments with its own grammar (the class of issue behind CVE-2024-24576). Any other
+                // executable receives its arguments verbatim via normal argv quoting.
+                bool escapeForCommandProcessor = RequiresCommandProcessorEscaping(startInfo.FileName);
 #if NET
                 foreach (string arg in arguments)
                 {
