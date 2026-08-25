@@ -100,9 +100,10 @@ public sealed partial class StdioClientTransport : IClientTransport
 
             // On Windows, resolve the command with a PATHEXT lookup: CreateProcess does not consult PATHEXT
             // when UseShellExecute is false, so a bare command like "npx" (really "npx.cmd") would otherwise
-            // fail to launch. The resolver is a no-op (returns null) on other platforms and for commands that
-            // need no expansion, in which case CreateProcess launches the command as given.
-            if (WindowsCommandResolver.Resolve(command, startInfo.WorkingDirectory) is { } resolvedCommand)
+            // fail to launch. The resolver is Windows-only and returns null for commands that need no
+            // expansion, in which case CreateProcess launches the command as given.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
+                WindowsCommandResolver.Resolve(command) is { } resolvedCommand)
             {
                 // Launch the resolved target directly. Windows CreateProcess still routes .cmd/.bat files
                 // through the command interpreter internally; that's expected.

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace ModelContextProtocol.Client;
@@ -6,7 +7,7 @@ internal static class WindowsCommandResolver
 {
     internal static string? Resolve(string command)
     {
-        Debug.Assert(OperatingSystem.IsWindows());
+        Debug.Assert(RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
         // PATHEXT expansion is the only thing this resolver adds over CreateProcess, which already searches
         // the current directory and PATH for the exact name. With no extensions to append there is nothing
         // left to do, so defer to CreateProcess by reporting no match.
