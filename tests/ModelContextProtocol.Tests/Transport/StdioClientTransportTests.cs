@@ -376,6 +376,59 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         }
     }
 
+    [Fact]
+    public async Task WorkingDirectory_DoesNotAffectCommandResolution()
+    {
+        // A bare command is resolved from PATH (and, on Windows, the process' current directory) but never
+        // from the child's requested working directory. This matches Linux, where the working directory does
+        // not participate in executable lookup. An executable that exists only in the working directory must
+        // therefore fail to launch rather than being resolved against it.
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"mcp-workdir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workingDirectory);
+        try
+        {
+            string commandName = $"mcp-probe-{Guid.NewGuid():N}";
+            if (PlatformDetection.IsWindows)
+            {
+                // The resolver would find "<name>.cmd" via PATHEXT if it searched the working directory.
+                File.WriteAllText(Path.Combine(workingDirectory, commandName + ".cmd"), "@echo off\r\n");
+            }
+            else
+            {
+                string scriptPath = Path.Combine(workingDirectory, commandName);
+                File.WriteAllText(scriptPath, "#!/bin/sh\n");
+#if NET
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                }
+#endif
+            }
+
+            StdioClientTransportOptions options = new()
+            {
+                Name = "Probe",
+                Command = commandName, // Bare name; the executable exists only in the working directory.
+                WorkingDirectory = workingDirectory,
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+            await Assert.ThrowsAsync<IOException>(async () =>
+                await transport.ConnectAsync(TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(workingDirectory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]
     public async Task InheritEnvironmentVariables_DefaultTrue_ChildSeesParentEnvVars()
     {
