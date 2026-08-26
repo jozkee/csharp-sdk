@@ -63,11 +63,12 @@ public sealed partial class StdioClientTransport : IClientTransport
 
         string command = _options.Command;
         IList<string>? arguments = _options.Arguments;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
-            !string.Equals(Path.GetFileName(command), "cmd.exe", StringComparison.OrdinalIgnoreCase))
+        bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        bool isCmd = string.Equals(Path.GetFileName(command), "cmd.exe", StringComparison.OrdinalIgnoreCase);
+        bool launchDirectly = isWindows && !isCmd && ShouldLaunchDirectly(command);
+        if (isWindows && !isCmd && !launchDirectly)
         {
-            // On Windows, for stdio, we need to wrap non-shell commands with cmd.exe /c {command} (usually npx or uvicorn).
-            // The stdio transport will not work correctly if the command is not run in a shell.
+            // Use cmd.exe for commands that require shell handling or resolution through PATH/PATHEXT.
             arguments = arguments is null or [] ? ["/c", command] : ["/c", command, ..arguments];
             command = "cmd.exe";
         }
@@ -98,13 +99,13 @@ public sealed partial class StdioClientTransport : IClientTransport
 #if NET
                 foreach (string arg in arguments)
                 {
-                    startInfo.ArgumentList.Add(EscapeArgumentString(arg));
+                    startInfo.ArgumentList.Add(launchDirectly ? arg : EscapeArgumentString(arg));
                 }
 #else
                 StringBuilder argsBuilder = new();
                 foreach (string arg in arguments)
                 {
-                    PasteArguments.AppendArgument(argsBuilder, EscapeArgumentString(arg));
+                    PasteArguments.AppendArgument(argsBuilder, launchDirectly ? arg : EscapeArgumentString(arg));
                 }
 
                 startInfo.Arguments = argsBuilder.ToString();
@@ -286,6 +287,25 @@ public sealed partial class StdioClientTransport : IClientTransport
         {
             return true;
         }
+    }
+
+    private static bool ShouldLaunchDirectly(string command)
+    {
+        // CreateProcess (used when UseShellExecute is false) can only launch real executable
+        // images directly, which in practice means .exe/.com. Anything else (.bat/.cmd, the
+        // Windows Script Host types such as .vbs/.js/.wsf, and association-driven scripts such
+        // as .ps1/.py) relies on cmd.exe resolving it via file association / PATHEXT, so it must
+        // keep going through the cmd.exe wrapper.
+        string extension = Path.GetExtension(command);
+        if (!extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".com", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Match Process resolution on Unix: rooted paths are used as supplied, while relative
+        // paths are probed against the parent process's current directory.
+        return Path.IsPathRooted(command) || File.Exists(command);
     }
 
     private static string EscapeArgumentString(string argument) =>

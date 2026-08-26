@@ -12,6 +12,7 @@ namespace ModelContextProtocol.Tests.Transport;
 public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : LoggedTest(testOutputHelper)
 {
     public static bool IsStdErrCallbackSupported => !PlatformDetection.IsMonoRuntime;
+    public static bool IsWindows => PlatformDetection.IsWindows;
 
     [Fact]
     public async Task ConnectAsync_DoesNotLogEnvironmentVariablesAtTrace()
@@ -165,13 +166,13 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
             Command = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
             {
                 (true, _) => "mono",
-                (_, true) => testServerExecutable,
+                (_, true) => "cmd.exe",
                 _ => "dotnet",
             },
             Arguments = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
             {
                 (true, _) => [testServerExecutable, "--echo-cli-arg-and-exit", cliArgument],
-                (_, true) => ["--echo-cli-arg-and-exit", cliArgument],
+                (_, true) => ["/c", testServerExecutable, "--echo-cli-arg-and-exit", cliArgument],
                 _ => [testServerDll, "--echo-cli-arg-and-exit", cliArgument],
             },
             StandardErrorLines = line =>
@@ -192,12 +193,125 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         JsonElement parsedArgument = JsonElement.Parse(serializedArgument);
         Assert.Equal(cliArgumentValue ?? "", parsedArgument.GetString());
 
-        var exception = await Assert.ThrowsAsync<ClientTransportClosedException>(
-            async () => await session.MessageReader.Completion.WaitAsync(
+        await AssertServerExitedCleanlyAsync(session);
+    }
+
+    [Theory(Skip = "Windows-only test.", SkipUnless = nameof(IsWindows))]
+    [InlineData("My Test Server.exe", true)]
+    [InlineData("My Test Server.com", false)]
+    [InlineData(@"my directory\my test server.exe", false)]
+    public async Task ExecutableWithSpacesHandledCorrectly(string relativeExecutablePath, bool useRootedPath)
+    {
+        const string OutputPrefix = "CLI_ARG:";
+        const string CliArgumentValue = "42";
+
+        string rootDirectoryName = $"BypassCmd-{Guid.NewGuid():N}";
+        string rootDirectory = Path.Combine(Environment.CurrentDirectory, rootDirectoryName);
+        string executablePath = Path.Combine(rootDirectory, relativeExecutablePath);
+        string executableDirectory = Path.GetDirectoryName(executablePath)!;
+
+        Directory.CreateDirectory(executableDirectory);
+        try
+        {
+            foreach (string sourcePath in Directory.EnumerateFiles(AppContext.BaseDirectory))
+            {
+                File.Copy(sourcePath, Path.Combine(executableDirectory, Path.GetFileName(sourcePath)));
+            }
+
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "TestServer.exe"), executablePath, overwrite: true);
+
+            string command = useRootedPath ? executablePath : Path.Combine(rootDirectoryName, relativeExecutablePath);
+
+            var capturedArgument = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var transport = new StdioClientTransport(new()
+            {
+                Name = "TestServer",
+                Command = command,
+                Arguments = ["--echo-cli-arg-and-exit", $"--cli-arg={CliArgumentValue}"],
+                StandardErrorLines = line =>
+                {
+                    if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
+                    {
+                        capturedArgument.TrySetResult(line[OutputPrefix.Length..]);
+                    }
+                },
+            }, LoggerFactory);
+
+            await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+            string serializedArgument = await capturedArgument.Task.WaitAsync(
                 TestConstants.DefaultTimeout,
-                TestContext.Current.CancellationToken));
-        var completionDetails = Assert.IsType<StdioClientCompletionDetails>(exception.Details);
-        Assert.Equal(0, completionDetails.ExitCode);
+                TestContext.Current.CancellationToken);
+            Assert.Equal(CliArgumentValue, JsonElement.Parse(serializedArgument).GetString());
+
+            await AssertServerExitedCleanlyAsync(session);
+        }
+        finally
+        {
+            Directory.Delete(rootDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task WorkingDirectory_IsUsedAsChildProcessCurrentDirectory()
+    {
+        const string OutputPrefix = "CWD:";
+        string testServerExecutable = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
+        string testServerDll = Path.Combine(AppContext.BaseDirectory, "TestServer.dll");
+
+        // A directory that does not contain the executable, so a successful launch also demonstrates the
+        // executable is located independently of WorkingDirectory.
+        string workingDirectory = Path.Combine(Path.GetTempPath(), $"McpStdioWorkingDir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workingDirectory);
+        try
+        {
+            var capturedCwd = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            StdioClientTransportOptions options = new()
+            {
+                Name = "TestServer",
+                Command = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
+                {
+                    (true, _) => "mono",
+                    (_, true) => testServerExecutable,
+                    _ => "dotnet",
+                },
+                Arguments = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
+                {
+                    (true, _) => [testServerExecutable, "--echo-cwd-and-exit"],
+                    (_, true) => ["--echo-cwd-and-exit"],
+                    _ => [testServerDll, "--echo-cwd-and-exit"],
+                },
+                WorkingDirectory = workingDirectory,
+                StandardErrorLines = line =>
+                {
+                    if (line.StartsWith(OutputPrefix, StringComparison.Ordinal))
+                    {
+                        capturedCwd.TrySetResult(line[OutputPrefix.Length..]);
+                    }
+                },
+            };
+
+            var transport = new StdioClientTransport(options, LoggerFactory);
+            await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+            string reportedCwd = (await capturedCwd.Task.WaitAsync(
+                TestConstants.DefaultTimeout,
+                TestContext.Current.CancellationToken)).Trim();
+
+            // The child reports the working directory we set. Compare with EndsWith because some platforms
+            // (e.g. macOS) report the temp path through its resolved location (/var -> /private/var).
+            char[] separators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
+            Assert.EndsWith(
+                workingDirectory.TrimEnd(separators),
+                reportedCwd.TrimEnd(separators),
+                PlatformDetection.IsWindows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+            await AssertServerExitedCleanlyAsync(session);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
     }
 
     [Fact(Skip = "Platform not supported by this test.", SkipUnless = nameof(IsStdErrCallbackSupported))]
@@ -430,5 +544,15 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         Assert.NotNull(readMessage);
         Assert.IsType<JsonRpcRequest>(readMessage);
         Assert.Equal("44", ((JsonRpcRequest)readMessage).Id.ToString());
+    }
+
+    private static async Task AssertServerExitedCleanlyAsync(ITransport session)
+    {
+        var exception = await Assert.ThrowsAsync<ClientTransportClosedException>(
+            async () => await session.MessageReader.Completion.WaitAsync(
+                TestConstants.DefaultTimeout,
+                TestContext.Current.CancellationToken));
+        var completionDetails = Assert.IsType<StdioClientCompletionDetails>(exception.Details);
+        Assert.Equal(0, completionDetails.ExitCode);
     }
 }
