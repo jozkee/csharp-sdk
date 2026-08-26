@@ -291,11 +291,9 @@ public sealed partial class StdioClientTransport : IClientTransport
 
     private static bool ShouldLaunchDirectly(string command)
     {
-        // CreateProcess (used when UseShellExecute is false) can only launch real executable
-        // images directly, which in practice means .exe/.com. Anything else (.bat/.cmd, the
-        // Windows Script Host types such as .vbs/.js/.wsf, and association-driven scripts such
-        // as .ps1/.py) relies on cmd.exe resolving it via file association / PATHEXT, so it must
-        // keep going through the cmd.exe wrapper.
+        // CreateProcess can only launch real executable images directly, 
+        // which in practice means .exe/.com. Anything else (.bat/.cmd) relies on cmd.exe 
+        // resolving it via file association / PATHEXT, so it must keep going through the cmd.exe wrapper.
         string extension = Path.GetExtension(command);
         if (!extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
             !extension.Equals(".com", StringComparison.OrdinalIgnoreCase))
