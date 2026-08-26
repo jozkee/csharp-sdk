@@ -7,6 +7,8 @@
     <PackageId>ModelContextProtocol.Extensions.Tasks</PackageId>
     <Description>MCP Tasks extension for the .NET Model Context Protocol (MCP) SDK</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- No baseline package has shipped yet, so there is nothing to validate the API surface against. -->
+    <EnablePackageValidation>false</EnablePackageValidation>
     <!-- Suppress the experimental MCP warnings for internal usage -->
     <NoWarn>$(NoWarn);MCPEXP001;MCPEXP002</NoWarn>
   </PropertyGroup>

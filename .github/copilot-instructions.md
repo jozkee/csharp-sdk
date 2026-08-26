@@ -146,6 +146,9 @@ The SDK consists of three main packages:
 - **Test**: `dotnet test`
 - **Clean**: `dotnet clean`
 
+> [!IMPORTANT]
+> Network access to `https://api.nuget.org` is blocked in this environment. The repo-root `nuget.config` is therefore configured to use the `dotnet-public` Azure DevOps feed (`https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-public/nuget/v3/index.json`) instead of nuget.org. Do not re-add the nuget.org source in this environment.
+
 ### Development Workflow
 **Critical**: Always follow this workflow when making changes:
 1. Make code changes
