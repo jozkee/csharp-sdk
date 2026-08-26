@@ -12,7 +12,6 @@ namespace ModelContextProtocol.Tests.Transport;
 public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : LoggedTest(testOutputHelper)
 {
     public static bool IsStdErrCallbackSupported => !PlatformDetection.IsMonoRuntime;
-    public static bool IsWindows => PlatformDetection.IsWindows;
 
     [Fact]
     public async Task ConnectAsync_DoesNotLogEnvironmentVariablesAtTrace()
@@ -196,10 +195,10 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
         await AssertServerExitedCleanlyAsync(session);
     }
 
-    [Theory(Skip = "Windows-only test.", SkipUnless = nameof(IsWindows))]
+    [Theory]
     [InlineData("My Test Server.exe", true)]
     [InlineData("My Test Server.com", false)]
-    [InlineData(@"my directory\my test server.exe", false)]
+    [InlineData("my directory/my test server.exe", false)]
     public async Task ExecutableWithSpacesHandledCorrectly(string relativeExecutablePath, bool useRootedPath)
     {
         const string OutputPrefix = "CLI_ARG:";
@@ -218,7 +217,8 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
                 File.Copy(sourcePath, Path.Combine(executableDirectory, Path.GetFileName(sourcePath)));
             }
 
-            File.Copy(Path.Combine(AppContext.BaseDirectory, "TestServer.exe"), executablePath, overwrite: true);
+            string sourceExecutablePath = Path.Combine(AppContext.BaseDirectory, PlatformDetection.IsWindows ? "TestServer.exe" : "TestServer");
+            File.Copy(sourceExecutablePath, executablePath, overwrite: true);
 
             string command = useRootedPath ? executablePath : Path.Combine(rootDirectoryName, relativeExecutablePath);
 
@@ -256,8 +256,9 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
     public async Task WorkingDirectory_IsUsedAsChildProcessCurrentDirectory()
     {
         const string OutputPrefix = "CWD:";
-        string testServerExecutable = Path.Combine(AppContext.BaseDirectory, "TestServer.exe");
-        string testServerDll = Path.Combine(AppContext.BaseDirectory, "TestServer.dll");
+        string testServerExecutable = Path.Combine(
+            AppContext.BaseDirectory,
+            PlatformDetection.IsWindows ? "TestServer.exe" : "TestServer");
 
         // A directory that does not contain the executable, so a successful launch also demonstrates the
         // executable is located independently of WorkingDirectory.
@@ -269,18 +270,8 @@ public class StdioClientTransportTests(ITestOutputHelper testOutputHelper) : Log
             StdioClientTransportOptions options = new()
             {
                 Name = "TestServer",
-                Command = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
-                {
-                    (true, _) => "mono",
-                    (_, true) => testServerExecutable,
-                    _ => "dotnet",
-                },
-                Arguments = (PlatformDetection.IsMonoRuntime, PlatformDetection.IsWindows) switch
-                {
-                    (true, _) => [testServerExecutable, "--echo-cwd-and-exit"],
-                    (_, true) => ["--echo-cwd-and-exit"],
-                    _ => [testServerDll, "--echo-cwd-and-exit"],
-                },
+                Command = testServerExecutable,
+                Arguments = ["--echo-cwd-and-exit"],
                 WorkingDirectory = workingDirectory,
                 StandardErrorLines = line =>
                 {
